@@ -205,8 +205,8 @@ fn fs(@location(0) uv: vec2f) -> @location(0) vec4f {
 }
 `;
 
-// Audio-reactive post-FX. mode bits: 1=chroma, 2=shockwave, 4=color shift.
-// COMBINED == 1|2|4 == 7. BASS BUMP needs no FX (handled by block-size).
+// Audio-reactive post-FX. mode bits: 1=chroma, 2=shockwave, 4=color shift, 8=spectrum.
+// COMBINED == 1|2|4|8 == 15. BASS BUMP needs no FX (handled by block-size on CPU side).
 const FRAG_VIZFX = /* wgsl */ `
 struct Params {
   resolution: vec2f,
@@ -219,9 +219,24 @@ struct Params {
   mode: u32,
 };
 
+struct FFT {
+  // 256 frequency bins packed as 64 vec4f. Each f in [0, 1].
+  bins: array<vec4f, 64>,
+};
+
 @group(0) @binding(0) var samp: sampler;
 @group(0) @binding(1) var src: texture_2d<f32>;
 @group(0) @binding(2) var<uniform> p: Params;
+@group(0) @binding(3) var<uniform> fft: FFT;
+
+fn fft_at(idx: u32) -> f32 {
+  let v = fft.bins[idx / 4u];
+  let c = idx % 4u;
+  if (c == 0u) { return v.x; }
+  if (c == 1u) { return v.y; }
+  if (c == 2u) { return v.z; }
+  return v.w;
+}
 
 @fragment
 fn fs(@location(0) uv: vec2f) -> @location(0) vec4f {
@@ -237,6 +252,13 @@ fn fs(@location(0) uv: vec2f) -> @location(0) vec4f {
     let ringDist = abs(dist - ringRadius);
     let ring = exp(-ringDist * 22.0) * p.beat;
     sampleUV = uv - radial * ring * 0.07 * p.intensity;
+  }
+
+  // Spectrum: each pixel column reads one FFT bin and offsets its V coord
+  if ((p.mode & 8u) != 0u) {
+    let binIdx = u32(clamp(uv.x, 0.0, 0.999) * 256.0);
+    let energy = fft_at(binIdx);
+    sampleUV.y = sampleUV.y + energy * 0.18 * p.intensity;
   }
 
   var col: vec4f;
@@ -261,6 +283,15 @@ fn fs(@location(0) uv: vec2f) -> @location(0) vec4f {
     let g2 = col.g + c * (col.b - col.r);
     let b2 = col.b + s * (col.r - col.g);
     col = vec4f(clamp(r2, 0.0, 1.0), clamp(g2, 0.0, 1.0), clamp(b2, 0.0, 1.0), col.a);
+  }
+
+  // Spectrum bar overlay: brighten near the top of column proportional to bin energy
+  if ((p.mode & 8u) != 0u) {
+    let binIdx = u32(clamp(uv.x, 0.0, 0.999) * 256.0);
+    let energy = fft_at(binIdx);
+    let barEdge = 1.0 - energy * 0.85;
+    let glow = smoothstep(barEdge - 0.02, barEdge, uv.y) * smoothstep(1.0, 0.97, uv.y);
+    col = vec4f(min(col.rgb + vec3f(glow * 0.5 * p.intensity, glow * 0.9 * p.intensity, glow * 0.2 * p.intensity), vec3f(1.0)), col.a);
   }
 
   // Beat flash (always-on if any FX is on): subtle whiten on beats
@@ -308,6 +339,7 @@ export class WebGPUPipeline {
   private pipelineVizFx!: GPURenderPipeline;
   private pipelineVizFxToCanvas!: GPURenderPipeline;
   private bufVizFx: GPUBuffer;
+  private bufFFT: GPUBuffer;
   private configuredCanvases = new WeakMap<HTMLCanvasElement, GPUCanvasContext>();
 
   // Lazily allocated work textures sized to the source image
@@ -364,6 +396,11 @@ export class WebGPUPipeline {
     // VizFx uniform: 8 floats (32 bytes) — see Params struct in WGSL
     this.bufVizFx = device.createBuffer({
       size: 32,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    // FFT uniform: 64 vec4f = 1024 bytes (256 frequency bins)
+    this.bufFFT = device.createBuffer({
+      size: 1024,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
   }
@@ -825,12 +862,24 @@ export class WebGPUPipeline {
       new Uint32Array(buf, 28, 1)[0] = v.mode;
       this.device.queue.writeBuffer(this.bufVizFx, 0, buf);
 
+      // FFT data: 256 floats packed into 64 vec4f (1024 bytes). When the caller
+      // didn't provide one (or it's shorter), pad with zeros — the SPECTRUM bit
+      // sees no displacement which is the safe no-op.
+      const fftIn = v.fft;
+      const fftBuf = new Float32Array(256);
+      if (fftIn) {
+        const len = Math.min(256, fftIn.length);
+        for (let i = 0; i < len; i++) fftBuf[i] = fftIn[i];
+      }
+      this.device.queue.writeBuffer(this.bufFFT, 0, fftBuf.buffer);
+
       const vizBg = this.device.createBindGroup({
         layout: this.pipelineVizFxToCanvas.getBindGroupLayout(0),
         entries: [
           { binding: 0, resource: this.samplerLinear },
           { binding: 1, resource: currentTex.createView() },
           { binding: 2, resource: { buffer: this.bufVizFx } },
+          { binding: 3, resource: { buffer: this.bufFFT } },
         ],
       });
       const presentPass = encoder.beginRenderPass({
@@ -888,8 +937,10 @@ export type VizParams = {
   beat: number;
   time: number;
   intensity: number;
-  /** Bit field: 1=chroma, 2=shockwave, 4=color shift. 0=none. */
+  /** Bit field: 1=chroma, 2=shockwave, 4=color shift, 8=spectrum. 0=none. */
   mode: number;
+  /** Optional 256-bin frequency data for SPECTRUM mode (each value 0..1). */
+  fft?: Float32Array;
 };
 
 // Singleton initialization — async, cached for app lifetime

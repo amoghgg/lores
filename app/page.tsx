@@ -66,7 +66,10 @@ export default function Page() {
     return audio.subscribe(() => setAudioState(audio.state));
   }, []);
 
-  const live = audioState === "playing" && vizMode !== "off" && !!source;
+  const live =
+    (audioState === "playing" || audioState === "mic") &&
+    vizMode !== "off" &&
+    !!source;
   const liveCanvasRef = useRef<HTMLCanvasElement | null>(null);
   if (typeof document !== "undefined" && !liveCanvasRef.current) {
     liveCanvasRef.current = document.createElement("canvas");
@@ -119,19 +122,23 @@ export default function Page() {
         if (cancelled) return;
         const frame = audio.sample();
 
-        const liveSettings: Settings = {
-          ...settings,
-          blockSize: Math.min(
-            48,
-            Math.max(
-              1,
-              Math.round(
-                settings.blockSize +
-                  frame.bass * bassBump * (vizIntensity / 100)
-              )
-            )
-          ),
-        };
+        const applyBassPump =
+          vizMode === "bass-bump" || vizMode === "combined";
+        const liveSettings: Settings = applyBassPump
+          ? {
+              ...settings,
+              blockSize: Math.min(
+                48,
+                Math.max(
+                  1,
+                  Math.round(
+                    settings.blockSize +
+                      frame.bass * bassBump * (vizIntensity / 100)
+                  )
+                )
+              ),
+            }
+          : settings;
 
         try {
           const r = await gpu.process(bitmap, liveSettings, {
@@ -144,6 +151,7 @@ export default function Page() {
               time: frame.time,
               intensity: vizIntensity / 100,
               mode: VIZ_MODE_BITS[vizMode],
+              fft: frame.fft,
             },
             bitmapAlreadyOwned: true,
           });
