@@ -15,7 +15,7 @@ import { AmountSlider } from "@/components/AmountSlider";
 import { AnimateSection } from "@/components/AnimateSection";
 
 import {
-  process,
+  processBest,
   upscaleNN,
   downloadPNG,
   effectiveBlockSize,
@@ -47,6 +47,7 @@ export default function Page() {
   const [output, setOutput] = useState<{
     canvas: HTMLCanvasElement;
     ms: number;
+    engine: "gpu" | "cpu";
   } | null>(null);
 
   const debounceRef = useRef<number | null>(null);
@@ -56,15 +57,17 @@ export default function Page() {
       return;
     }
     if (debounceRef.current) window.clearTimeout(debounceRef.current);
-    debounceRef.current = window.setTimeout(() => {
+    let cancelled = false;
+    debounceRef.current = window.setTimeout(async () => {
       try {
-        const result = process(source.image, settings);
-        setOutput(result);
+        const result = await processBest(source.image, settings);
+        if (!cancelled) setOutput(result);
       } catch (err) {
         console.error(err);
       }
     }, 80);
     return () => {
+      cancelled = true;
       if (debounceRef.current) window.clearTimeout(debounceRef.current);
     };
   }, [source, settings]);
@@ -320,6 +323,7 @@ export default function Page() {
         blockSize={settings.blockSize}
         ms={output?.ms ?? null}
         outScale={outScale}
+        engine={output?.engine ?? null}
       />
     </div>
   );

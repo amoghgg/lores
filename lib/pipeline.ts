@@ -116,6 +116,30 @@ export function upscaleNN(
   return out;
 }
 
+/**
+ * Dispatch to GPU when possible, fall back to CPU on any failure.
+ * Returns a stable shape with `engine` so the UI can surface which path ran.
+ */
+export async function processBest(
+  source: HTMLImageElement,
+  settings: Settings
+): Promise<ProcessResult & { engine: "gpu" | "cpu" }> {
+  const { gpuCanHandle, getWebGPU } = await import("./gpu/webgpu");
+  if (gpuCanHandle(settings)) {
+    const gpu = await getWebGPU();
+    if (gpu) {
+      try {
+        const r = await gpu.process(source, settings);
+        return { ...r, engine: "gpu" };
+      } catch (err) {
+        console.warn("[lores] GPU pipeline failed, falling back to CPU:", err);
+      }
+    }
+  }
+  const r = process(source, settings);
+  return { ...r, engine: "cpu" };
+}
+
 export function downloadPNG(canvas: HTMLCanvasElement, filename: string) {
   canvas.toBlob((blob) => {
     if (!blob) return;

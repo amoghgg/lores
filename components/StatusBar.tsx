@@ -6,6 +6,7 @@ type Props = {
   blockSize: number;
   ms: number | null;
   outScale: number;
+  engine: "gpu" | "cpu" | null;
 };
 
 export function StatusBar({
@@ -16,6 +17,7 @@ export function StatusBar({
   blockSize,
   ms,
   outScale,
+  engine,
 }: Props) {
   return (
     <footer className="border-t border-ink-400 bg-ink-50 px-3 sm:px-4 py-2 text-[10px] tracking-widest uppercase text-ink-700 flex items-center gap-2 sm:gap-3 overflow-x-auto whitespace-nowrap">
@@ -35,6 +37,16 @@ export function StatusBar({
       <Cell label="OUT" hideOnMobile>{outScale}×</Cell>
       <Sep />
       <Cell label="DT">{ms === null ? "—" : `${ms.toFixed(0)}ms`}</Cell>
+      <Sep />
+      <Cell label="ENG">
+        {engine === "gpu" ? (
+          <span className="text-lime">GPU</span>
+        ) : engine === "cpu" ? (
+          <span className="text-warn">CPU</span>
+        ) : (
+          "—"
+        )}
+      </Cell>
       <div className="flex-1" />
       <span className="text-lime animate-blink flex-shrink-0">●</span>
       <span className="text-ink-700 flex-shrink-0">READY</span>
