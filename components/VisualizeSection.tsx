@@ -50,6 +50,7 @@ export function VisualizeSection({
   const [audioSource, setAudioSource] = useState<AudioSource>("file");
   const [loop, setLoopState] = useState(audio.loop);
   const [currentTime, setCurrentTime] = useState(0);
+  const [signal, setSignal] = useState({ bass: 0, mid: 0, treble: 0, beat: 0 });
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -77,6 +78,26 @@ export function VisualizeSection({
     if (audioSource === "mic") void audio.startMic();
     else audio.stopMic();
   }, [audio, audioSource]);
+
+  // Live signal meter — polls the analyser at 20 Hz whenever audio is active,
+  // independent of the page-level rAF render loop. Lets you eyeball whether
+  // the audio engine is actually producing data.
+  useEffect(() => {
+    if (state !== "playing" && state !== "mic") {
+      setSignal({ bass: 0, mid: 0, treble: 0, beat: 0 });
+      return;
+    }
+    const id = window.setInterval(() => {
+      const f = audio.sample();
+      setSignal({
+        bass: f.bass,
+        mid: f.mid,
+        treble: f.treble,
+        beat: f.beat,
+      });
+    }, 50);
+    return () => window.clearInterval(id);
+  }, [audio, state]);
 
   const handleFile = async (file: File | null | undefined) => {
     if (!file) return;
@@ -280,6 +301,41 @@ export function VisualizeSection({
             </div>
           )}
 
+        {/* Live signal meter — shows whether audio engine is producing data */}
+        {(state === "playing" || state === "mic") && (
+          <div className="border border-ink-400 bg-ink-50 p-3 space-y-1.5">
+            <div className="flex items-center justify-between text-[9px] tracking-widest uppercase">
+              <span className="text-ink-700">SIGNAL</span>
+              <span
+                className="inline-flex items-center gap-1"
+                title="beat indicator"
+              >
+                <span className="text-ink-700">BEAT</span>
+                <span
+                  className="inline-block w-2.5 h-2.5 border border-ink-500"
+                  style={{
+                    backgroundColor:
+                      signal.beat > 0.05
+                        ? `rgba(163, 230, 53, ${signal.beat})`
+                        : "transparent",
+                  }}
+                />
+              </span>
+            </div>
+            <SignalBar label="BASS" value={signal.bass} />
+            <SignalBar label="MID" value={signal.mid} />
+            <SignalBar label="TREB" value={signal.treble} />
+            {signal.bass < 0.01 &&
+              signal.mid < 0.01 &&
+              signal.treble < 0.01 && (
+                <p className="text-[9px] text-warn tracking-wider mt-1 normal-case leading-snug">
+                  No signal detected. Check volume / browser tab audio / mic
+                  permission.
+                </p>
+              )}
+          </div>
+        )}
+
         {/* Modes */}
         <div>
           <div className="text-[10px] tracking-widest uppercase text-ink-700 mb-2">
@@ -364,4 +420,22 @@ export function VisualizeSection({
 
 function truncate(s: string, n: number) {
   return s.length > n ? "…" + s.slice(-n + 1) : s;
+}
+
+function SignalBar({ label, value }: { label: string; value: number }) {
+  const pct = Math.min(100, Math.max(0, value * 100));
+  return (
+    <div className="flex items-center gap-2 text-[9px] tracking-widest uppercase">
+      <span className="text-ink-700 w-10">{label}</span>
+      <div className="flex-1 h-1.5 bg-ink-200 border border-ink-400 relative overflow-hidden">
+        <div
+          className="absolute left-0 top-0 bottom-0 bg-lime"
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+      <span className="text-ink-900 tabular-nums w-7 text-right">
+        {pct.toFixed(0)}
+      </span>
+    </div>
+  );
 }

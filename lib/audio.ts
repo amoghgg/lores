@@ -28,7 +28,6 @@ export class AudioEngine {
   private ctx: AudioContext | null = null;
   private analyser: AnalyserNode | null = null;
   private gain: GainNode | null = null;
-  private destinationConnected = false;
 
   private buffer: AudioBuffer | null = null;
   private source: AudioBufferSourceNode | null = null;
@@ -71,23 +70,16 @@ export class AudioEngine {
     this.analyser.smoothingTimeConstant = 0.7;
     this.gain = this.ctx.createGain();
     this.gain.gain.value = 1;
-    // analyser → gain stays wired; gain → destination is conditional
+    // Keep the analyser permanently in the audio graph: analyser → gain → destination.
+    // Web Audio is pull-driven; without this chain to destination the analyser
+    // doesn't actually process incoming samples. For mic mode we mute via gain.
     this.analyser.connect(this.gain);
-  }
-
-  private connectToDestination() {
-    if (!this.ctx || !this.gain) return;
-    if (this.destinationConnected) return;
     this.gain.connect(this.ctx.destination);
-    this.destinationConnected = true;
-  }
-
-  private disconnectFromDestination() {
-    if (!this.gain || !this.destinationConnected) return;
-    try {
-      this.gain.disconnect(this.ctx!.destination);
-    } catch {}
-    this.destinationConnected = false;
+    console.log("[lores audio] context created", {
+      sampleRate: this.ctx.sampleRate,
+      state: this.ctx.state,
+      fftSize: FFT_SIZE,
+    });
   }
 
   // ─── FILE PATH ───────────────────────────────────────────────────────
@@ -117,10 +109,11 @@ export class AudioEngine {
   }
 
   async play() {
-    if (!this.ctx || !this.buffer || !this.analyser) return;
+    if (!this.ctx || !this.buffer || !this.analyser || !this.gain) return;
     if (this.state === "playing") return;
     if (this.ctx.state === "suspended") await this.ctx.resume();
-    this.connectToDestination();
+    // Restore output volume in case mic mode previously muted it
+    this.gain.gain.value = 1;
     this.source = this.ctx.createBufferSource();
     this.source.buffer = this.buffer;
     this.source.loop = this.loopFlag;
@@ -136,6 +129,11 @@ export class AudioEngine {
     };
     this.state = "playing";
     this.emit();
+    console.log("[lores audio] play started", {
+      pausedAt: this.pausedAt,
+      duration: this.duration,
+      ctxState: this.ctx.state,
+    });
   }
 
   pause() {
@@ -213,12 +211,14 @@ export class AudioEngine {
 
   async startMic() {
     this.ensureContext();
-    if (!this.ctx || !this.analyser) return;
+    if (!this.ctx || !this.analyser || !this.gain) return;
     this.stop(); // stop any file playback
     if (this.ctx.state === "suspended") await this.ctx.resume();
     try {
-      // Disconnect from speakers BEFORE wiring mic — prevents feedback
-      this.disconnectFromDestination();
+      // Mute output (analyser → gain → destination chain stays alive so the
+      // analyser keeps processing samples, but no mic playback through speakers
+      // ⇒ no feedback).
+      this.gain.gain.value = 0;
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           echoCancellation: false,
@@ -232,8 +232,18 @@ export class AudioEngine {
       this.energyHistory = [];
       this.state = "mic";
       this.emit();
+      console.log("[lores audio] mic active", {
+        ctxState: this.ctx.state,
+        sampleRate: this.ctx.sampleRate,
+        tracks: stream.getAudioTracks().map((t) => ({
+          label: t.label,
+          enabled: t.enabled,
+          muted: t.muted,
+        })),
+      });
     } catch (err) {
-      console.error("[lores] mic permission failed:", err);
+      console.error("[lores audio] mic permission failed:", err);
+      this.gain.gain.value = 1;
       this.state = "error";
       this.errorMessage =
         (err as Error).name === "NotAllowedError"
@@ -254,9 +264,11 @@ export class AudioEngine {
       this.mediaStream.getTracks().forEach((t) => t.stop());
       this.mediaStream = null;
     }
+    if (this.gain) this.gain.gain.value = 1;
     if (this.state === "mic") {
       this.state = this.buffer ? "loaded" : "empty";
       this.emit();
+      console.log("[lores audio] mic stopped");
     }
   }
 

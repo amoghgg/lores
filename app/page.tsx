@@ -106,7 +106,10 @@ export default function Page() {
 
     (async () => {
       const gpu = await getWebGPU();
-      if (!gpu || cancelled) return;
+      if (!gpu || cancelled) {
+        console.warn("[lores live] cannot start — gpu unavailable", { gpu, cancelled });
+        return;
+      }
 
       // Cache an ImageBitmap for the source so we don't re-decode each frame.
       const bitmap = await createImageBitmap(source.image);
@@ -114,6 +117,14 @@ export default function Page() {
         bitmap.close();
         return;
       }
+
+      console.log("[lores live] render loop started", {
+        vizMode,
+        intensity: vizIntensity,
+        bassBump,
+        audioState,
+        sourceDims: { w: source.width, h: source.height },
+      });
 
       // Show the live canvas in the preview area
       setOutput({ canvas, ms: 0, engine: "gpu" });
