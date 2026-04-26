@@ -1,0 +1,170 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    color-scheme: dark;
+  }
+
+  html,
+  body {
+    background: #0a0a0a;
+    color: #e8e8e8;
+    font-family: var(--font-mono), ui-monospace, monospace;
+    font-feature-settings: "ss02", "ss19", "calt", "liga";
+    -webkit-font-smoothing: antialiased;
+  }
+
+  ::selection {
+    background: #a3e635;
+    color: #0a0a0a;
+  }
+
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  ::-webkit-scrollbar-track {
+    background: #0a0a0a;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #1a1a1a;
+    border: 1px solid #262626;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: #262626;
+  }
+
+  input[type="range"] {
+    -webkit-appearance: none;
+    background: transparent;
+  }
+}
+
+@layer utilities {
+  /* Checkerboard transparency pattern for the canvas backdrop */
+  .checker {
+    background-color: #0a0a0a;
+    background-image:
+      linear-gradient(45deg, #141414 25%, transparent 25%),
+      linear-gradient(-45deg, #141414 25%, transparent 25%),
+      linear-gradient(45deg, transparent 75%, #141414 75%),
+      linear-gradient(-45deg, transparent 75%, #141414 75%);
+    background-size: 16px 16px;
+    background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+  }
+
+  /* Subtle CRT scanline overlay for the brand mark */
+  .scanlines {
+    background-image: repeating-linear-gradient(
+      0deg,
+      rgba(163, 230, 53, 0.04) 0,
+      rgba(163, 230, 53, 0.04) 1px,
+      transparent 1px,
+      transparent 3px
+    );
+  }
+
+  /* Pegboard-style hover marks */
+  .peg {
+    position: relative;
+  }
+  .peg::before,
+  .peg::after {
+    content: "+";
+    position: absolute;
+    color: #3d3d3d;
+    font-size: 10px;
+    line-height: 1;
+    pointer-events: none;
+  }
+  .peg::before {
+    top: 4px;
+    left: 4px;
+  }
+  .peg::after {
+    bottom: 4px;
+    right: 4px;
+  }
+
+  /* Hairline border that doesn't quite reach corners — ASCII box vibe */
+  .frame {
+    position: relative;
+  }
+  .frame::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border: 1px solid #1a1a1a;
+    pointer-events: none;
+  }
+
+  /* Numerical readout box */
+  .readout {
+    border: 1px solid #1a1a1a;
+    background: #070707;
+    padding: 2px 6px;
+    font-variant-numeric: tabular-nums;
+    color: #a3e635;
+  }
+
+  .text-shadow-glow {
+    text-shadow: 0 0 8px rgba(163, 230, 53, 0.4);
+  }
+
+  /* Pixelated rendering for canvas elements */
+  .pixelated {
+    image-rendering: pixelated;
+    image-rendering: -moz-crisp-edges;
+  }
+}
+
+/* Custom range slider — chunky knob, no rounded corners */
+input[type="range"].chunky {
+  width: 100%;
+  height: 24px;
+  background: transparent;
+  cursor: ew-resize;
+}
+input[type="range"].chunky::-webkit-slider-runnable-track {
+  height: 4px;
+  background: #1a1a1a;
+  border: 1px solid #262626;
+}
+input[type="range"].chunky::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  height: 16px;
+  width: 8px;
+  background: #a3e635;
+  border: 0;
+  margin-top: -7px;
+  box-shadow: 0 0 0 1px #0a0a0a, 2px 0 0 0 #5c8120;
+}
+input[type="range"].chunky::-moz-range-track {
+  height: 4px;
+  background: #1a1a1a;
+  border: 1px solid #262626;
+}
+input[type="range"].chunky::-moz-range-thumb {
+  height: 16px;
+  width: 8px;
+  background: #a3e635;
+  border: 0;
+  border-radius: 0;
+}
+input[type="range"].chunky:focus {
+  outline: none;
+}
+input[type="range"].chunky:focus::-webkit-slider-thumb {
+  background: #bef264;
+  box-shadow: 0 0 0 1px #0a0a0a, 0 0 8px rgba(163, 230, 53, 0.6);
+}
+
+/* Drag-over state for the dropzone */
+.drag-active {
+  border-color: #a3e635 !important;
+}
+.drag-active .corner {
+  color: #a3e635 !important;
+}

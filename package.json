@@ -1,0 +1,30 @@
+{
+  "name": "lores",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Browser-only pixel art tool — drop an image, get authentic 8-bit output.",
+  "homepage": "https://pixel.amoghbajpai.com",
+  "repository": "github:amoghgg/lores",
+  "license": "MIT",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "next": "^16.2.4",
+    "react": "^19.2.5",
+    "react-dom": "^19.2.5"
+  },
+  "devDependencies": {
+    "@types/node": "22.10.5",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "autoprefixer": "10.4.20",
+    "postcss": "8.5.1",
+    "tailwindcss": "3.4.17",
+    "typescript": "5.7.3"
+  }
+}
