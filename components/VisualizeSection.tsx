@@ -12,6 +12,7 @@ export type VizMode =
   | "chroma"
   | "shockwave"
   | "spectrum"
+  | "strobe"
   | "combined";
 
 export const VIZ_MODE_BITS: Record<VizMode, number> = {
@@ -20,7 +21,8 @@ export const VIZ_MODE_BITS: Record<VizMode, number> = {
   chroma: 1,
   shockwave: 2,
   spectrum: 8,
-  combined: 1 | 2 | 4 | 8,
+  strobe: 16,
+  combined: 1 | 2 | 4 | 8 | 16,
 };
 
 type AudioSource = "file" | "mic";
@@ -352,42 +354,27 @@ export function VisualizeSection({
             ]}
           />
           <div className="grid grid-cols-2 gap-1 mt-1">
-            <button
+            <ModeBox
+              active={mode === "spectrum"}
               onClick={() => onModeChange("spectrum")}
-              className={`text-left px-3 py-2 border transition-colors ${
-                mode === "spectrum"
-                  ? "border-lime bg-ink-200 text-ink-900"
-                  : "border-ink-400 bg-ink-50 text-ink-700 hover:text-ink-900 hover:bg-ink-200"
-              }`}
-            >
-              <div className="text-[10px] tracking-widest uppercase font-medium flex items-center gap-2">
-                <span className={mode === "spectrum" ? "text-lime" : "text-ink-600"}>
-                  {mode === "spectrum" ? "■" : "□"}
-                </span>
-                SPECTRUM
-              </div>
-              <div className="text-[9px] tracking-wider text-ink-700 mt-1">
-                FFT-driven wave
-              </div>
-            </button>
-            <button
+              label="SPECTRUM"
+              hint="FFT-driven wave"
+            />
+            <ModeBox
+              active={mode === "strobe"}
+              onClick={() => onModeChange("strobe")}
+              label="STROBE"
+              hint="invert on beat"
+            />
+          </div>
+          <div className="mt-1">
+            <ModeBox
+              active={mode === "combined"}
               onClick={() => onModeChange("combined")}
-              className={`text-left px-3 py-2 border transition-colors ${
-                mode === "combined"
-                  ? "border-lime bg-ink-200 text-ink-900"
-                  : "border-ink-400 bg-ink-50 text-ink-700 hover:text-ink-900 hover:bg-ink-200"
-              }`}
-            >
-              <div className="text-[10px] tracking-widest uppercase font-medium flex items-center gap-2">
-                <span className={mode === "combined" ? "text-lime" : "text-ink-600"}>
-                  {mode === "combined" ? "■" : "□"}
-                </span>
-                COMBINED
-              </div>
-              <div className="text-[9px] tracking-wider text-ink-700 mt-1">
-                everything · DJ feel
-              </div>
-            </button>
+              label="COMBINED"
+              hint="everything · DJ feel"
+              wide
+            />
           </div>
         </div>
 
@@ -420,6 +407,39 @@ export function VisualizeSection({
 
 function truncate(s: string, n: number) {
   return s.length > n ? "…" + s.slice(-n + 1) : s;
+}
+
+function ModeBox({
+  active,
+  onClick,
+  label,
+  hint,
+  wide,
+}: {
+  active: boolean;
+  onClick: () => void;
+  label: string;
+  hint: string;
+  wide?: boolean;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`text-left px-3 py-2 border transition-colors ${
+        active
+          ? "border-lime bg-ink-200 text-ink-900"
+          : "border-ink-400 bg-ink-50 text-ink-700 hover:text-ink-900 hover:bg-ink-200"
+      } ${wide ? "w-full" : ""}`}
+    >
+      <div className="text-[10px] tracking-widest uppercase font-medium flex items-center gap-2">
+        <span className={active ? "text-lime" : "text-ink-600"}>
+          {active ? "■" : "□"}
+        </span>
+        {label}
+      </div>
+      <div className="text-[9px] tracking-wider text-ink-700 mt-1">{hint}</div>
+    </button>
+  );
 }
 
 function SignalBar({ label, value }: { label: string; value: number }) {

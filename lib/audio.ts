@@ -315,11 +315,12 @@ export class AudioEngine {
     avg /= Math.max(1, this.energyHistory.length);
 
     const now = this.ctx.currentTime;
-    if (bass > avg * 1.4 && bass > 0.28 && now - this.lastBeatAt > 0.18) {
+    // More permissive beat detection — most tracks live in 0.15–0.5 bass range
+    if (bass > avg * 1.22 && bass > 0.16 && now - this.lastBeatAt > 0.13) {
       this.beatPulse = 1;
       this.lastBeatAt = now;
     } else {
-      this.beatPulse *= 0.86;
+      this.beatPulse *= 0.84;
     }
 
     const time =

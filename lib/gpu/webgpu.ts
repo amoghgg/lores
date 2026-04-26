@@ -205,8 +205,9 @@ fn fs(@location(0) uv: vec2f) -> @location(0) vec4f {
 }
 `;
 
-// Audio-reactive post-FX. mode bits: 1=chroma, 2=shockwave, 4=color shift, 8=spectrum.
-// COMBINED == 1|2|4|8 == 15. BASS BUMP needs no FX (handled by block-size on CPU side).
+// Audio-reactive post-FX.
+// mode bits: 1=chroma, 2=shockwave, 4=color shift, 8=spectrum, 16=invert strobe.
+// COMBINED == 1|2|4|8|16 == 31. BASS BUMP needs no FX (handled by block-size on CPU).
 const FRAG_VIZFX = /* wgsl */ `
 struct Params {
   resolution: vec2f,
@@ -246,27 +247,27 @@ fn fs(@location(0) uv: vec2f) -> @location(0) vec4f {
 
   var sampleUV = uv;
 
-  // Shockwave: ring radius grows with time-since-beat (encoded in beat decay)
+  // Shockwave: punchier ring + larger displacement so a single kick is unmistakable
   if ((p.mode & 2u) != 0u) {
-    let ringRadius = (1.0 - p.beat) * 0.65;
+    let ringRadius = (1.0 - p.beat) * 0.7;
     let ringDist = abs(dist - ringRadius);
-    let ring = exp(-ringDist * 22.0) * p.beat;
-    sampleUV = uv - radial * ring * 0.07 * p.intensity;
+    let ring = exp(-ringDist * 14.0) * p.beat;
+    sampleUV = uv - radial * ring * 0.16 * p.intensity;
   }
 
   // Spectrum: each pixel column reads one FFT bin and offsets its V coord
   if ((p.mode & 8u) != 0u) {
     let binIdx = u32(clamp(uv.x, 0.0, 0.999) * 256.0);
     let energy = fft_at(binIdx);
-    sampleUV.y = sampleUV.y + energy * 0.18 * p.intensity;
+    sampleUV.y = sampleUV.y + energy * 0.32 * p.intensity;
   }
 
   var col: vec4f;
 
   if ((p.mode & 1u) != 0u) {
-    // Chroma split: R offset by bass, B by treble — channel separation feel
-    let bOff = vec2f(p.bass * 0.018 * p.intensity, 0.0);
-    let tOff = vec2f(-p.treble * 0.018 * p.intensity, 0.0);
+    // Chroma split: much wider R/B separation, plus subtle vertical shimmer
+    let bOff = vec2f(p.bass * 0.05 * p.intensity, p.bass * 0.012 * p.intensity);
+    let tOff = vec2f(-p.treble * 0.05 * p.intensity, -p.treble * 0.012 * p.intensity);
     let r = textureSample(src, samp, sampleUV + bOff);
     let g = textureSample(src, samp, sampleUV);
     let b = textureSample(src, samp, sampleUV + tOff);
@@ -275,28 +276,34 @@ fn fs(@location(0) uv: vec2f) -> @location(0) vec4f {
     col = textureSample(src, samp, sampleUV);
   }
 
-  // Color shift: mid frequency rotates hue subtly via channel mixing
+  // Color shift: mid-frequency-driven hue rotation — dramatic
   if ((p.mode & 4u) != 0u) {
-    let s = sin(p.time * 1.2 + p.mid * 6.0) * 0.18 * p.intensity;
-    let c = cos(p.time * 1.2 + p.mid * 6.0) * 0.18 * p.intensity;
+    let s = sin(p.time * 1.4 + p.mid * 8.0) * 0.42 * p.intensity;
+    let c = cos(p.time * 1.4 + p.mid * 8.0) * 0.42 * p.intensity;
     let r2 = col.r + s * (col.g - col.b);
     let g2 = col.g + c * (col.b - col.r);
     let b2 = col.b + s * (col.r - col.g);
     col = vec4f(clamp(r2, 0.0, 1.0), clamp(g2, 0.0, 1.0), clamp(b2, 0.0, 1.0), col.a);
   }
 
-  // Spectrum bar overlay: brighten near the top of column proportional to bin energy
+  // Spectrum bar overlay: lime equalizer columns with brighter glow
   if ((p.mode & 8u) != 0u) {
     let binIdx = u32(clamp(uv.x, 0.0, 0.999) * 256.0);
     let energy = fft_at(binIdx);
-    let barEdge = 1.0 - energy * 0.85;
-    let glow = smoothstep(barEdge - 0.02, barEdge, uv.y) * smoothstep(1.0, 0.97, uv.y);
-    col = vec4f(min(col.rgb + vec3f(glow * 0.5 * p.intensity, glow * 0.9 * p.intensity, glow * 0.2 * p.intensity), vec3f(1.0)), col.a);
+    let barEdge = 1.0 - energy * 0.95;
+    let glow = smoothstep(barEdge - 0.03, barEdge, uv.y) * smoothstep(1.0, 0.95, uv.y);
+    col = vec4f(min(col.rgb + vec3f(glow * 0.7 * p.intensity, glow * 1.0 * p.intensity, glow * 0.25 * p.intensity), vec3f(1.0)), col.a);
   }
 
-  // Beat flash (always-on if any FX is on): subtle whiten on beats
+  // STROBE: invert image proportionally to beat pulse — DJ-club flicker
+  if ((p.mode & 16u) != 0u) {
+    let invStrength = p.beat * 0.85 * p.intensity;
+    col = vec4f(mix(col.rgb, vec3f(1.0) - col.rgb, invStrength), col.a);
+  }
+
+  // Beat flash: stronger whiten on every beat
   if (p.mode != 0u) {
-    let flash = p.beat * 0.18 * p.intensity;
+    let flash = p.beat * 0.32 * p.intensity;
     col = vec4f(min(col.rgb + vec3f(flash), vec3f(1.0)), col.a);
   }
 

@@ -15,8 +15,8 @@ import { AmountSlider } from "@/components/AmountSlider";
 import {
   VisualizeSection,
   VIZ_MODE_BITS,
-  type VizMode,
 } from "@/components/VisualizeSection";
+import type { VizMode } from "@/components/VisualizeSection";
 
 import {
   processBest,
@@ -75,6 +75,26 @@ export default function Page() {
     liveCanvasRef.current = document.createElement("canvas");
   }
 
+  // Refs hold the latest live-render inputs so the rAF tick reads them on every
+  // frame WITHOUT the effect having to tear down and restart on every change.
+  // Restarting was causing settings updates to be lost / delayed during playback.
+  const settingsRef = useRef(settings);
+  const vizModeRef = useRef<VizMode>(vizMode);
+  const vizIntensityRef = useRef(vizIntensity);
+  const bassBumpRef = useRef(bassBump);
+  useEffect(() => {
+    settingsRef.current = settings;
+  }, [settings]);
+  useEffect(() => {
+    vizModeRef.current = vizMode;
+  }, [vizMode]);
+  useEffect(() => {
+    vizIntensityRef.current = vizIntensity;
+  }, [vizIntensity]);
+  useEffect(() => {
+    bassBumpRef.current = bassBump;
+  }, [bassBump]);
+
   // ─── Static processing path ──────────────────────────────────────────
   const debounceRef = useRef<number | null>(null);
   useEffect(() => {
@@ -96,63 +116,71 @@ export default function Page() {
   }, [source, settings, live]);
 
   // ─── Live audio-reactive render loop ─────────────────────────────────
+  // Deps intentionally just [live, source]. Settings/mode/intensity flow in
+  // through refs so we don't tear down and rebuild the loop on every slider tick.
   useEffect(() => {
     if (!live || !source) return;
     const audio = getAudio();
     const canvas = liveCanvasRef.current!;
     let raf = 0;
     let cancelled = false;
+    let bitmap: ImageBitmap | null = null;
     let lastReportedAt = 0;
 
     (async () => {
       const gpu = await getWebGPU();
       if (!gpu || cancelled) {
-        console.warn("[lores live] cannot start — gpu unavailable", { gpu, cancelled });
+        console.warn("[lores live] cannot start — gpu unavailable", {
+          gpu,
+          cancelled,
+        });
         return;
       }
 
       // Cache an ImageBitmap for the source so we don't re-decode each frame.
-      const bitmap = await createImageBitmap(source.image);
+      const bm = await createImageBitmap(source.image);
       if (cancelled) {
-        bitmap.close();
+        bm.close();
         return;
       }
+      bitmap = bm;
 
       console.log("[lores live] render loop started", {
-        vizMode,
-        intensity: vizIntensity,
-        bassBump,
-        audioState,
+        vizMode: vizModeRef.current,
         sourceDims: { w: source.width, h: source.height },
       });
 
-      // Show the live canvas in the preview area
       setOutput({ canvas, ms: 0, engine: "gpu" });
 
       const tick = async () => {
         if (cancelled) return;
+
+        // Read the latest user inputs from refs every frame.
+        const s = settingsRef.current;
+        const vm = vizModeRef.current;
+        const vi = vizIntensityRef.current;
+        const bp = bassBumpRef.current;
+
         const frame = audio.sample();
 
-        const applyBassPump =
-          vizMode === "bass-bump" || vizMode === "combined";
+        const applyBassPump = vm === "bass-bump" || vm === "combined";
+        // Nonlinear bass curve so kicks pop more visibly than gentle hums
+        const bassCurve = Math.pow(frame.bass, 0.55);
         const liveSettings: Settings = applyBassPump
           ? {
-              ...settings,
+              ...s,
               blockSize: Math.min(
                 48,
                 Math.max(
                   1,
-                  Math.round(
-                    settings.blockSize +
-                      frame.bass * bassBump * (vizIntensity / 100)
-                  )
+                  Math.round(s.blockSize + bassCurve * bp * (vi / 100))
                 )
               ),
             }
-          : settings;
+          : s;
 
         try {
-          const r = await gpu.process(bitmap, liveSettings, {
+          const r = await gpu.process(bitmap!, liveSettings, {
             outCanvas: canvas,
             viz: {
               bass: frame.bass,
@@ -160,18 +188,19 @@ export default function Page() {
               treble: frame.treble,
               beat: frame.beat,
               time: frame.time,
-              intensity: vizIntensity / 100,
-              mode: VIZ_MODE_BITS[vizMode],
+              intensity: vi / 100,
+              mode: VIZ_MODE_BITS[vm],
               fft: frame.fft,
             },
             bitmapAlreadyOwned: true,
           });
-          // Throttle status-bar updates to every 200ms to avoid React thrash
           const now = performance.now();
           if (now - lastReportedAt > 200) {
             lastReportedAt = now;
             setOutput((prev) =>
-              prev ? { ...prev, ms: r.ms } : { canvas, ms: r.ms, engine: "gpu" }
+              prev
+                ? { ...prev, ms: r.ms }
+                : { canvas, ms: r.ms, engine: "gpu" }
             );
           }
         } catch (err) {
@@ -181,15 +210,14 @@ export default function Page() {
         raf = requestAnimationFrame(tick);
       };
       raf = requestAnimationFrame(tick);
-
-      return () => bitmap.close();
     })();
 
     return () => {
       cancelled = true;
       cancelAnimationFrame(raf);
+      if (bitmap) bitmap.close();
     };
-  }, [live, source, settings, vizMode, vizIntensity, bassBump]);
+  }, [live, source]);
 
   const onFile = (file: File) => {
     const url = URL.createObjectURL(file);
