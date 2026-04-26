@@ -2,13 +2,17 @@ import { pixelate } from "./pixelate";
 import { quantize } from "./quantize";
 import { floydSteinberg, bayer4, bayer8 } from "./dither";
 import { getPalette } from "./palettes";
+import { blend } from "./blend";
 
 export type DitherMode = "none" | "floyd" | "bayer4" | "bayer8";
 
 export type Settings = {
   blockSize: number;
+  pixelAmount: number; // 0..1
   paletteId: string;
+  paletteAmount: number; // 0..1
   dither: DitherMode;
+  ditherAmount: number; // 0..1
 };
 
 export type ProcessResult = {
@@ -17,8 +21,8 @@ export type ProcessResult = {
 };
 
 /**
- * Run the full pixelate → palette → dither pipeline on a source image.
- * Output is a same-size canvas (use ExportCanvas to upscale on download).
+ * Run the full pixelate → palette → dither pipeline. Each stage has its own
+ * blend amount so users can dial in subtle effects.
  */
 export function process(
   source: HTMLImageElement,
@@ -37,24 +41,40 @@ export function process(
 
   ctx.imageSmoothingEnabled = false;
   ctx.drawImage(source, 0, 0);
-  let img = ctx.getImageData(0, 0, w, h);
+  const original = ctx.getImageData(0, 0, w, h);
+  let img = original;
 
-  // 1. Pixelate (block average)
-  if (settings.blockSize > 1) {
-    img = pixelate(img, settings.blockSize);
+  // 1. Pixelate (with amount blend back to original)
+  if (settings.blockSize > 1 && settings.pixelAmount > 0) {
+    const pixelated = pixelate(original, settings.blockSize);
+    img = blend(original, pixelated, settings.pixelAmount);
   }
+  const afterPixel = img;
 
-  // 2. Palette + dithering
+  // 2. Palette quantize
   const palette = getPalette(settings.paletteId);
-  if (palette.colors.length > 0) {
+  if (palette.colors.length > 0 && settings.paletteAmount > 0) {
+    const quantized = quantize(afterPixel, palette.colors);
+    img = blend(afterPixel, quantized, settings.paletteAmount);
+  }
+  const afterPalette = img;
+
+  // 3. Dither (only if a palette is active and dither mode != none)
+  if (
+    settings.dither !== "none" &&
+    palette.colors.length > 0 &&
+    settings.ditherAmount > 0
+  ) {
+    let dithered: ImageData | null = null;
     if (settings.dither === "floyd") {
-      img = floydSteinberg(img, palette.colors);
+      dithered = floydSteinberg(afterPixel, palette.colors);
     } else if (settings.dither === "bayer4") {
-      img = bayer4(img, palette.colors);
+      dithered = bayer4(afterPixel, palette.colors);
     } else if (settings.dither === "bayer8") {
-      img = bayer8(img, palette.colors);
-    } else {
-      img = quantize(img, palette.colors);
+      dithered = bayer8(afterPixel, palette.colors);
+    }
+    if (dithered) {
+      img = blend(afterPalette, dithered, settings.ditherAmount);
     }
   }
 
@@ -64,7 +84,6 @@ export function process(
 
 /**
  * Re-render a processed canvas at an integer scale using nearest-neighbor.
- * Used at export time for chunky printable output.
  */
 export function upscaleNN(
   source: HTMLCanvasElement,

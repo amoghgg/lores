@@ -11,6 +11,8 @@ import { PaletteGrid } from "@/components/PaletteGrid";
 import { RadioBoxes } from "@/components/RadioBoxes";
 import { StatusBar } from "@/components/StatusBar";
 import { MobileSourceChips } from "@/components/MobileSourceChips";
+import { AmountSlider } from "@/components/AmountSlider";
+import { AnimateSection } from "@/components/AnimateSection";
 
 import {
   process,
@@ -21,7 +23,7 @@ import {
 } from "@/lib/pipeline";
 import { getPalette, PALETTES } from "@/lib/palettes";
 
-const BUILD_DATE = "2026.04.23";
+const BUILD_DATE = "2026.04.27";
 
 type SourceState = {
   image: HTMLImageElement;
@@ -34,8 +36,11 @@ export default function Page() {
   const [source, setSource] = useState<SourceState | null>(null);
   const [settings, setSettings] = useState<Settings>({
     blockSize: 8,
+    pixelAmount: 1,
     paletteId: "gb",
+    paletteAmount: 1,
     dither: "none",
+    ditherAmount: 1,
   });
   const [outScale, setOutScale] = useState<number>(1);
   const [output, setOutput] = useState<{
@@ -43,7 +48,6 @@ export default function Page() {
     ms: number;
   } | null>(null);
 
-  // Process pipeline whenever source or settings change. Debounced to keep slider snappy.
   const debounceRef = useRef<number | null>(null);
   useEffect(() => {
     if (!source) {
@@ -95,6 +99,11 @@ export default function Page() {
     [settings.paletteId]
   );
 
+  const showPixelAmount = settings.blockSize > 1;
+  const showPaletteAmount = settings.paletteId !== "none";
+  const showDitherAmount =
+    settings.dither !== "none" && settings.paletteId !== "none";
+
   return (
     <div className="min-h-[100svh] lg:h-screen flex flex-col bg-ink-100 text-ink-900">
       <Header buildDate={BUILD_DATE} />
@@ -145,7 +154,7 @@ export default function Page() {
               account. Your image never leaves this tab.
             </p>
             <div className="mt-4 flex items-center justify-between">
-              <span className="text-ink-600">v0.1.0</span>
+              <span className="text-ink-600">v0.2.0</span>
               <span className="text-ink-600">MIT</span>
             </div>
           </div>
@@ -176,10 +185,14 @@ export default function Page() {
                 setSettings((s) => ({ ...s, blockSize }))
               }
             />
-            <p className="mt-2 text-[9px] tracking-wider text-ink-700 leading-relaxed normal-case">
-              Larger blocks → chunkier pixels. Each block becomes one solid
-              color.
-            </p>
+            {showPixelAmount && (
+              <AmountSlider
+                value={settings.pixelAmount}
+                onChange={(pixelAmount) =>
+                  setSettings((s) => ({ ...s, pixelAmount }))
+                }
+              />
+            )}
           </Section>
 
           <Section
@@ -193,6 +206,14 @@ export default function Page() {
                 setSettings((s) => ({ ...s, paletteId }))
               }
             />
+            {showPaletteAmount && (
+              <AmountSlider
+                value={settings.paletteAmount}
+                onChange={(paletteAmount) =>
+                  setSettings((s) => ({ ...s, paletteAmount }))
+                }
+              />
+            )}
           </Section>
 
           <Section index="04" title="DITHER" badge={settings.dither.toUpperCase()}>
@@ -206,12 +227,25 @@ export default function Page() {
                 { value: "bayer8", label: "BAYER 8", hint: "ordered 8×8" },
               ]}
             />
-            <p className="mt-2 text-[9px] tracking-wider text-ink-700 leading-relaxed normal-case">
-              Dithering simulates more colors than the palette holds.
-            </p>
+            {showDitherAmount && (
+              <AmountSlider
+                value={settings.ditherAmount}
+                onChange={(ditherAmount) =>
+                  setSettings((s) => ({ ...s, ditherAmount }))
+                }
+              />
+            )}
           </Section>
 
-          <Section index="05" title="EXPORT" badge={`${outScale}× SCALE`}>
+          <AnimateSection
+            source={source?.image ?? null}
+            filename={source?.filename ?? null}
+            settings={settings}
+            width={source?.width ?? 1}
+            height={source?.height ?? 1}
+          />
+
+          <Section index="06" title="EXPORT" badge={`${outScale}× SCALE`}>
             <RadioBoxes<string>
               value={String(outScale)}
               onChange={(v) => setOutScale(Number(v))}
@@ -256,7 +290,6 @@ export default function Page() {
         </aside>
       </main>
 
-      {/* Mobile: floating quick-export action when image is loaded */}
       {output && (
         <div className="lg:hidden sticky bottom-0 z-10 border-t border-ink-400 bg-ink-50/95 backdrop-blur px-3 py-2 flex items-center gap-2">
           <div className="flex-1 min-w-0 text-[10px] tracking-widest uppercase text-ink-700 flex items-center gap-2">
