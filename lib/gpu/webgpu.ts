@@ -205,6 +205,74 @@ fn fs(@location(0) uv: vec2f) -> @location(0) vec4f {
 }
 `;
 
+// Audio-reactive post-FX. mode bits: 1=chroma, 2=shockwave, 4=color shift.
+// COMBINED == 1|2|4 == 7. BASS BUMP needs no FX (handled by block-size).
+const FRAG_VIZFX = /* wgsl */ `
+struct Params {
+  resolution: vec2f,
+  bass: f32,
+  mid: f32,
+  treble: f32,
+  beat: f32,
+  time: f32,
+  intensity: f32,
+  mode: u32,
+};
+
+@group(0) @binding(0) var samp: sampler;
+@group(0) @binding(1) var src: texture_2d<f32>;
+@group(0) @binding(2) var<uniform> p: Params;
+
+@fragment
+fn fs(@location(0) uv: vec2f) -> @location(0) vec4f {
+  let centered = uv - vec2f(0.5);
+  let dist = length(centered);
+  let radial = centered / max(dist, 0.0001);
+
+  var sampleUV = uv;
+
+  // Shockwave: ring radius grows with time-since-beat (encoded in beat decay)
+  if ((p.mode & 2u) != 0u) {
+    let ringRadius = (1.0 - p.beat) * 0.65;
+    let ringDist = abs(dist - ringRadius);
+    let ring = exp(-ringDist * 22.0) * p.beat;
+    sampleUV = uv - radial * ring * 0.07 * p.intensity;
+  }
+
+  var col: vec4f;
+
+  if ((p.mode & 1u) != 0u) {
+    // Chroma split: R offset by bass, B by treble — channel separation feel
+    let bOff = vec2f(p.bass * 0.018 * p.intensity, 0.0);
+    let tOff = vec2f(-p.treble * 0.018 * p.intensity, 0.0);
+    let r = textureSample(src, samp, sampleUV + bOff);
+    let g = textureSample(src, samp, sampleUV);
+    let b = textureSample(src, samp, sampleUV + tOff);
+    col = vec4f(r.r, g.g, b.b, g.a);
+  } else {
+    col = textureSample(src, samp, sampleUV);
+  }
+
+  // Color shift: mid frequency rotates hue subtly via channel mixing
+  if ((p.mode & 4u) != 0u) {
+    let s = sin(p.time * 1.2 + p.mid * 6.0) * 0.18 * p.intensity;
+    let c = cos(p.time * 1.2 + p.mid * 6.0) * 0.18 * p.intensity;
+    let r2 = col.r + s * (col.g - col.b);
+    let g2 = col.g + c * (col.b - col.r);
+    let b2 = col.b + s * (col.r - col.g);
+    col = vec4f(clamp(r2, 0.0, 1.0), clamp(g2, 0.0, 1.0), clamp(b2, 0.0, 1.0), col.a);
+  }
+
+  // Beat flash (always-on if any FX is on): subtle whiten on beats
+  if (p.mode != 0u) {
+    let flash = p.beat * 0.18 * p.intensity;
+    col = vec4f(min(col.rgb + vec3f(flash), vec3f(1.0)), col.a);
+  }
+
+  return col;
+}
+`;
+
 // ───────────────────────────────────────────────────────────────────────────
 // Pipeline
 // ───────────────────────────────────────────────────────────────────────────
@@ -227,6 +295,7 @@ export class WebGPUPipeline {
   private modBayer!: GPUShaderModule;
   private modStipple!: GPUShaderModule;
   private modCopy!: GPUShaderModule;
+  private modVizFx!: GPUShaderModule;
 
   private samplerLinear!: GPUSampler;
 
@@ -236,6 +305,10 @@ export class WebGPUPipeline {
   private pipelineStipple!: GPURenderPipeline;
   private pipelineCopyToCanvas!: GPURenderPipeline;
   private pipelineCopyToWork!: GPURenderPipeline;
+  private pipelineVizFx!: GPURenderPipeline;
+  private pipelineVizFxToCanvas!: GPURenderPipeline;
+  private bufVizFx: GPUBuffer;
+  private configuredCanvases = new WeakMap<HTMLCanvasElement, GPUCanvasContext>();
 
   // Lazily allocated work textures sized to the source image
   private width = 0;
@@ -288,6 +361,11 @@ export class WebGPUPipeline {
       size: 16,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
+    // VizFx uniform: 8 floats (32 bytes) — see Params struct in WGSL
+    this.bufVizFx = device.createBuffer({
+      size: 32,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
   }
 
   private compile() {
@@ -299,6 +377,7 @@ export class WebGPUPipeline {
     this.modBayer = d.createShaderModule({ code: FRAG_BAYER });
     this.modStipple = d.createShaderModule({ code: FRAG_STIPPLE });
     this.modCopy = d.createShaderModule({ code: FRAG_COPY });
+    this.modVizFx = d.createShaderModule({ code: FRAG_VIZFX });
 
     this.samplerLinear = d.createSampler({
       magFilter: "nearest",
@@ -370,6 +449,44 @@ export class WebGPUPipeline {
       },
       primitive: { topology: "triangle-list" },
     });
+
+    this.pipelineVizFx = d.createRenderPipeline({
+      layout: "auto",
+      vertex: { module: this.modVert, entryPoint: "vs" },
+      fragment: {
+        module: this.modVizFx,
+        entryPoint: "fs",
+        targets: [{ format: WORK_FORMAT }],
+      },
+      primitive: { topology: "triangle-list" },
+    });
+
+    this.pipelineVizFxToCanvas = d.createRenderPipeline({
+      layout: "auto",
+      vertex: { module: this.modVert, entryPoint: "vs" },
+      fragment: {
+        module: this.modVizFx,
+        entryPoint: "fs",
+        targets: [{ format: this.canvasFormat }],
+      },
+      primitive: { topology: "triangle-list" },
+    });
+  }
+
+  private getCanvasContext(canvas: HTMLCanvasElement): GPUCanvasContext {
+    let ctx = this.configuredCanvases.get(canvas);
+    if (!ctx) {
+      const gpuCtx = canvas.getContext("webgpu");
+      if (!gpuCtx) throw new Error("WebGPU canvas context unavailable");
+      gpuCtx.configure({
+        device: this.device,
+        format: this.canvasFormat,
+        alphaMode: "premultiplied",
+      });
+      this.configuredCanvases.set(canvas, gpuCtx);
+      ctx = gpuCtx;
+    }
+    return ctx;
   }
 
   private resize(w: number, h: number) {
@@ -441,34 +558,44 @@ export class WebGPUPipeline {
   // ─── Public: process a single image end-to-end ───────────────────────────
 
   async process(
-    source: HTMLImageElement,
-    settings: Settings
+    source: HTMLImageElement | ImageBitmap,
+    settings: Settings,
+    options?: {
+      outCanvas?: HTMLCanvasElement;
+      viz?: VizParams;
+      bitmapAlreadyOwned?: boolean;
+    }
   ): Promise<GPUProcessResult> {
     const t0 = performance.now();
 
-    const w = source.naturalWidth;
-    const h = source.naturalHeight;
+    const w =
+      "naturalWidth" in source ? source.naturalWidth : source.width;
+    const h =
+      "naturalHeight" in source ? source.naturalHeight : source.height;
     this.resize(w, h);
 
-    const outCanvas = document.createElement("canvas");
-    outCanvas.width = w;
-    outCanvas.height = h;
-    const ctx = outCanvas.getContext("webgpu");
-    if (!ctx) throw new Error("WebGPU canvas context unavailable");
-    ctx.configure({
-      device: this.device,
-      format: this.canvasFormat,
-      alphaMode: "premultiplied",
-    });
+    const outCanvas = options?.outCanvas ?? document.createElement("canvas");
+    if (outCanvas.width !== w) outCanvas.width = w;
+    if (outCanvas.height !== h) outCanvas.height = h;
+    const ctx = this.getCanvasContext(outCanvas);
 
-    // Upload source bitmap to texSource
-    const bitmap = await createImageBitmap(source);
+    // Upload source bitmap to texSource. createImageBitmap fails on already-bitmap
+    // sources in some browsers; skip in that case (live audio loop reuses bitmaps).
+    let bitmap: ImageBitmap;
+    if (source instanceof ImageBitmap) {
+      bitmap = source;
+    } else {
+      bitmap = await createImageBitmap(source);
+    }
     this.device.queue.copyExternalImageToTexture(
       { source: bitmap },
       { texture: this.texSource! },
       [w, h]
     );
-    bitmap.close();
+    if (!(source instanceof ImageBitmap) || !options?.bitmapAlreadyOwned) {
+      // Only close if we created it here
+      if (!(source instanceof ImageBitmap)) bitmap.close();
+    }
 
     const encoder = this.device.createCommandEncoder();
 
@@ -677,29 +804,72 @@ export class WebGPUPipeline {
       }
     }
 
-    // ─── 4. PRESENT to canvas ────────────────────────────────────────────
+    // ─── 4. PRESENT to canvas (with optional viz post-FX) ────────────────
     const targetTex = ctx.getCurrentTexture();
-    const presentBg = this.device.createBindGroup({
-      layout: this.pipelineCopyToCanvas.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: this.samplerLinear },
-        { binding: 1, resource: currentTex.createView() },
-      ],
-    });
-    const presentPass = encoder.beginRenderPass({
-      colorAttachments: [
-        {
-          view: targetTex.createView(),
-          clearValue: { r: 0, g: 0, b: 0, a: 1 },
-          loadOp: "clear",
-          storeOp: "store",
-        },
-      ],
-    });
-    presentPass.setPipeline(this.pipelineCopyToCanvas);
-    presentPass.setBindGroup(0, presentBg);
-    presentPass.draw(3, 1, 0, 0);
-    presentPass.end();
+
+    const useViz = !!options?.viz && options.viz.mode !== 0;
+    if (useViz) {
+      const v = options!.viz!;
+      const buf = new ArrayBuffer(32);
+      new Float32Array(buf, 0, 7).set([
+        w,
+        h,
+        v.bass,
+        v.mid,
+        v.treble,
+        v.beat,
+        v.time,
+      ]);
+      // Slot 7 = intensity (f32), slot 8 = mode (u32)
+      new Float32Array(buf, 24, 1)[0] = v.intensity;
+      new Uint32Array(buf, 28, 1)[0] = v.mode;
+      this.device.queue.writeBuffer(this.bufVizFx, 0, buf);
+
+      const vizBg = this.device.createBindGroup({
+        layout: this.pipelineVizFxToCanvas.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: this.samplerLinear },
+          { binding: 1, resource: currentTex.createView() },
+          { binding: 2, resource: { buffer: this.bufVizFx } },
+        ],
+      });
+      const presentPass = encoder.beginRenderPass({
+        colorAttachments: [
+          {
+            view: targetTex.createView(),
+            clearValue: { r: 0, g: 0, b: 0, a: 1 },
+            loadOp: "clear",
+            storeOp: "store",
+          },
+        ],
+      });
+      presentPass.setPipeline(this.pipelineVizFxToCanvas);
+      presentPass.setBindGroup(0, vizBg);
+      presentPass.draw(3, 1, 0, 0);
+      presentPass.end();
+    } else {
+      const presentBg = this.device.createBindGroup({
+        layout: this.pipelineCopyToCanvas.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: this.samplerLinear },
+          { binding: 1, resource: currentTex.createView() },
+        ],
+      });
+      const presentPass = encoder.beginRenderPass({
+        colorAttachments: [
+          {
+            view: targetTex.createView(),
+            clearValue: { r: 0, g: 0, b: 0, a: 1 },
+            loadOp: "clear",
+            storeOp: "store",
+          },
+        ],
+      });
+      presentPass.setPipeline(this.pipelineCopyToCanvas);
+      presentPass.setBindGroup(0, presentBg);
+      presentPass.draw(3, 1, 0, 0);
+      presentPass.end();
+    }
 
     this.device.queue.submit([encoder.finish()]);
 
@@ -710,6 +880,17 @@ export class WebGPUPipeline {
     };
   }
 }
+
+export type VizParams = {
+  bass: number;
+  mid: number;
+  treble: number;
+  beat: number;
+  time: number;
+  intensity: number;
+  /** Bit field: 1=chroma, 2=shockwave, 4=color shift. 0=none. */
+  mode: number;
+};
 
 // Singleton initialization — async, cached for app lifetime
 let pipelinePromise: Promise<WebGPUPipeline | null> | null = null;

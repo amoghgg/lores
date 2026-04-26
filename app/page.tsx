@@ -12,7 +12,11 @@ import { RadioBoxes } from "@/components/RadioBoxes";
 import { StatusBar } from "@/components/StatusBar";
 import { MobileSourceChips } from "@/components/MobileSourceChips";
 import { AmountSlider } from "@/components/AmountSlider";
-import { AnimateSection } from "@/components/AnimateSection";
+import {
+  VisualizeSection,
+  VIZ_MODE_BITS,
+  type VizMode,
+} from "@/components/VisualizeSection";
 
 import {
   processBest,
@@ -23,6 +27,8 @@ import {
   type Settings,
 } from "@/lib/pipeline";
 import { getPalette, PALETTES } from "@/lib/palettes";
+import { getAudio } from "@/lib/audio";
+import { getWebGPU } from "@/lib/gpu/webgpu";
 
 const BUILD_DATE = "2026.04.27";
 
@@ -50,12 +56,26 @@ export default function Page() {
     engine: "gpu" | "cpu";
   } | null>(null);
 
+  // ─── Visualize state ─────────────────────────────────────────────────
+  const [vizMode, setVizMode] = useState<VizMode>("off");
+  const [vizIntensity, setVizIntensity] = useState<number>(100);
+  const [bassBump, setBassBump] = useState<number>(12);
+  const [audioState, setAudioState] = useState(getAudio().state);
+  useEffect(() => {
+    const audio = getAudio();
+    return audio.subscribe(() => setAudioState(audio.state));
+  }, []);
+
+  const live = audioState === "playing" && vizMode !== "off" && !!source;
+  const liveCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  if (typeof document !== "undefined" && !liveCanvasRef.current) {
+    liveCanvasRef.current = document.createElement("canvas");
+  }
+
+  // ─── Static processing path ──────────────────────────────────────────
   const debounceRef = useRef<number | null>(null);
   useEffect(() => {
-    if (!source) {
-      setOutput(null);
-      return;
-    }
+    if (!source || live) return;
     if (debounceRef.current) window.clearTimeout(debounceRef.current);
     let cancelled = false;
     debounceRef.current = window.setTimeout(async () => {
@@ -70,7 +90,87 @@ export default function Page() {
       cancelled = true;
       if (debounceRef.current) window.clearTimeout(debounceRef.current);
     };
-  }, [source, settings]);
+  }, [source, settings, live]);
+
+  // ─── Live audio-reactive render loop ─────────────────────────────────
+  useEffect(() => {
+    if (!live || !source) return;
+    const audio = getAudio();
+    const canvas = liveCanvasRef.current!;
+    let raf = 0;
+    let cancelled = false;
+    let lastReportedAt = 0;
+
+    (async () => {
+      const gpu = await getWebGPU();
+      if (!gpu || cancelled) return;
+
+      // Cache an ImageBitmap for the source so we don't re-decode each frame.
+      const bitmap = await createImageBitmap(source.image);
+      if (cancelled) {
+        bitmap.close();
+        return;
+      }
+
+      // Show the live canvas in the preview area
+      setOutput({ canvas, ms: 0, engine: "gpu" });
+
+      const tick = async () => {
+        if (cancelled) return;
+        const frame = audio.sample();
+
+        const liveSettings: Settings = {
+          ...settings,
+          blockSize: Math.min(
+            48,
+            Math.max(
+              1,
+              Math.round(
+                settings.blockSize +
+                  frame.bass * bassBump * (vizIntensity / 100)
+              )
+            )
+          ),
+        };
+
+        try {
+          const r = await gpu.process(bitmap, liveSettings, {
+            outCanvas: canvas,
+            viz: {
+              bass: frame.bass,
+              mid: frame.mid,
+              treble: frame.treble,
+              beat: frame.beat,
+              time: frame.time,
+              intensity: vizIntensity / 100,
+              mode: VIZ_MODE_BITS[vizMode],
+            },
+            bitmapAlreadyOwned: true,
+          });
+          // Throttle status-bar updates to every 200ms to avoid React thrash
+          const now = performance.now();
+          if (now - lastReportedAt > 200) {
+            lastReportedAt = now;
+            setOutput((prev) =>
+              prev ? { ...prev, ms: r.ms } : { canvas, ms: r.ms, engine: "gpu" }
+            );
+          }
+        } catch (err) {
+          console.warn("[lores] live frame failed:", err);
+        }
+
+        raf = requestAnimationFrame(tick);
+      };
+      raf = requestAnimationFrame(tick);
+
+      return () => bitmap.close();
+    })();
+
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(raf);
+    };
+  }, [live, source, settings, vizMode, vizIntensity, bassBump]);
 
   const onFile = (file: File) => {
     const url = URL.createObjectURL(file);
@@ -157,14 +257,27 @@ export default function Page() {
             )}
           </Section>
 
+          {live && (
+            <div className="px-4 py-3 border-t border-ink-400 text-[9px] tracking-widest uppercase">
+              <div className="flex items-center gap-2">
+                <span className="text-lime animate-blink">●</span>
+                <span className="text-lime">VIZ ACTIVE</span>
+              </div>
+              <p className="mt-1 text-ink-700 normal-case tracking-normal text-[10px] leading-snug font-normal">
+                Audio is driving the canvas. Adjust block size, palette, and
+                dither — they all compose with the reactive layer.
+              </p>
+            </div>
+          )}
+
           <div className="mt-auto p-4 text-[9px] tracking-widest text-ink-700 leading-relaxed border-t border-ink-400">
             <p className="mb-2 text-ink-800">PRIVACY</p>
             <p className="text-ink-700 normal-case tracking-normal text-[10px] leading-snug font-normal">
               Everything runs in your browser. No upload, no tracking, no
-              account. Your image never leaves this tab.
+              account. Your image and audio never leave this tab.
             </p>
             <div className="mt-4 flex items-center justify-between">
-              <span className="text-ink-600">v0.2.0</span>
+              <span className="text-ink-600">v0.3.0</span>
               <span className="text-ink-600">MIT</span>
             </div>
           </div>
@@ -243,12 +356,13 @@ export default function Page() {
             )}
           </Section>
 
-          <AnimateSection
-            source={source?.image ?? null}
-            filename={source?.filename ?? null}
-            settings={settings}
-            width={source?.width ?? 1}
-            height={source?.height ?? 1}
+          <VisualizeSection
+            mode={vizMode}
+            intensity={vizIntensity}
+            bassBump={bassBump}
+            onModeChange={setVizMode}
+            onIntensityChange={setVizIntensity}
+            onBassBumpChange={setBassBump}
           />
 
           <Section index="06" title="EXPORT" badge={`${outScale}× SCALE`}>
@@ -299,19 +413,30 @@ export default function Page() {
       {output && (
         <div className="lg:hidden sticky bottom-0 z-10 border-t border-ink-400 bg-ink-50/95 backdrop-blur px-3 py-2 flex items-center gap-2">
           <div className="flex-1 min-w-0 text-[10px] tracking-widest uppercase text-ink-700 flex items-center gap-2">
-            <span className="text-ink-600">READY</span>
-            <span className="readout text-lime tabular-nums">
-              {output.canvas.width}×{output.canvas.height}
-            </span>
-            <span className="text-ink-600">·</span>
-            <span className="text-ink-700">{outScale}×</span>
+            {live ? (
+              <>
+                <span className="text-lime animate-blink">●</span>
+                <span className="text-lime">VIZ LIVE</span>
+              </>
+            ) : (
+              <>
+                <span className="text-ink-600">READY</span>
+                <span className="readout text-lime tabular-nums">
+                  {output.canvas.width}×{output.canvas.height}
+                </span>
+                <span className="text-ink-600">·</span>
+                <span className="text-ink-700">{outScale}×</span>
+              </>
+            )}
           </div>
-          <button
-            onClick={onExport}
-            className="px-4 py-2 border border-lime bg-lime text-ink-100 active:bg-lime-glow text-[11px] tracking-widest uppercase font-bold flex-shrink-0"
-          >
-            [ DOWNLOAD ]
-          </button>
+          {!live && (
+            <button
+              onClick={onExport}
+              className="px-4 py-2 border border-lime bg-lime text-ink-100 active:bg-lime-glow text-[11px] tracking-widest uppercase font-bold flex-shrink-0"
+            >
+              [ DOWNLOAD ]
+            </button>
+          )}
         </div>
       )}
 
