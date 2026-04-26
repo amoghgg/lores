@@ -16,6 +16,16 @@
     -webkit-font-smoothing: antialiased;
   }
 
+  /* Desktop: lock the document to viewport — internal panels scroll, body doesn't */
+  @media (min-width: 1024px) {
+    html,
+    body {
+      height: 100%;
+      overflow: hidden;
+      overscroll-behavior: contain;
+    }
+  }
+
   ::selection {
     background: #a3e635;
     color: #0a0a0a;

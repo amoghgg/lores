@@ -119,24 +119,17 @@ export default function Page() {
   }
 
   // Refs hold the latest live-render inputs so the rAF tick reads them on every
-  // frame WITHOUT the effect having to tear down and restart on every change.
-  // Restarting was causing settings updates to be lost / delayed during playback.
+  // frame without the effect having to tear down. We sync inline (during render)
+  // — synchronous, no useEffect timing window where the rAF could read a stale
+  // ref between a setState and its post-commit effect. Standard React pattern.
   const settingsRef = useRef(settings);
+  settingsRef.current = settings;
   const vizModeRef = useRef<VizMode>(vizMode);
+  vizModeRef.current = vizMode;
   const vizIntensityRef = useRef(vizIntensity);
+  vizIntensityRef.current = vizIntensity;
   const bassBumpRef = useRef(bassBump);
-  useEffect(() => {
-    settingsRef.current = settings;
-  }, [settings]);
-  useEffect(() => {
-    vizModeRef.current = vizMode;
-  }, [vizMode]);
-  useEffect(() => {
-    vizIntensityRef.current = vizIntensity;
-  }, [vizIntensity]);
-  useEffect(() => {
-    bassBumpRef.current = bassBump;
-  }, [bassBump]);
+  bassBumpRef.current = bassBump;
 
   // ─── Static processing path ──────────────────────────────────────────
   const debounceRef = useRef<number | null>(null);
@@ -186,6 +179,9 @@ export default function Page() {
 
       setOutput({ canvas, ms: 0, engine: "gpu" });
 
+      let frameCount = 0;
+      let lastLoggedPalette = "";
+
       const tick = async () => {
         if (cancelled) return;
 
@@ -194,6 +190,19 @@ export default function Page() {
         const vm = vizModeRef.current;
         const vi = vizIntensityRef.current;
         const bp = bassBumpRef.current;
+
+        // Log when palette changes so we can verify settings flow through to the loop.
+        if (s.paletteId !== lastLoggedPalette) {
+          console.log("[lores live] settings updated mid-loop", {
+            paletteId: s.paletteId,
+            blockSize: s.blockSize,
+            dither: s.dither,
+            vizMode: vm,
+            frame: frameCount,
+          });
+          lastLoggedPalette = s.paletteId;
+        }
+        frameCount++;
 
         const frame = audio.sample();
 
