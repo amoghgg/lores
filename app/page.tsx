@@ -18,6 +18,7 @@ import {
   process,
   upscaleNN,
   downloadPNG,
+  effectiveBlockSize,
   type DitherMode,
   type Settings,
 } from "@/lib/pipeline";
@@ -104,6 +105,12 @@ export default function Page() {
   const showDitherAmount =
     settings.dither !== "none" && settings.paletteId !== "none";
 
+  const effBlock = effectiveBlockSize(settings);
+  const pixelBadge =
+    settings.pixelAmount < 1 && settings.blockSize > 1
+      ? `[ ${String(effBlock).padStart(3, "0")} / ${String(settings.blockSize).padStart(3, "0")} ]`
+      : `[ ${String(settings.blockSize).padStart(3, "0")} ]`;
+
   return (
     <div className="min-h-[100svh] lg:h-screen flex flex-col bg-ink-100 text-ink-900">
       <Header buildDate={BUILD_DATE} />
@@ -171,11 +178,7 @@ export default function Page() {
 
         {/* RIGHT RAIL — controls */}
         <aside className="bg-ink-50 lg:overflow-y-auto border-t lg:border-t-0 lg:border-l border-ink-400 flex flex-col">
-          <Section
-            index="02"
-            title="PIXEL"
-            badge={`[ ${String(settings.blockSize).padStart(3, "0")} ]`}
-          >
+          <Section index="02" title="PIXEL" badge={pixelBadge}>
             <Slider
               label="BLOCK SIZE"
               value={settings.blockSize}

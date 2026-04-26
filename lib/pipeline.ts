@@ -2,28 +2,37 @@ import { pixelate } from "./pixelate";
 import { quantize } from "./quantize";
 import { floydSteinberg, bayer4, bayer8 } from "./dither";
 import { getPalette } from "./palettes";
-import { blend } from "./blend";
+import { stippleBlend } from "./blend";
 
 export type DitherMode = "none" | "floyd" | "bayer4" | "bayer8";
 
 export type Settings = {
   blockSize: number;
-  pixelAmount: number; // 0..1
+  pixelAmount: number; // 0..1 — interpolates effective block size 1 → blockSize
   paletteId: string;
-  paletteAmount: number; // 0..1
+  paletteAmount: number; // 0..1 — stipple blend pre/post quantize
   dither: DitherMode;
-  ditherAmount: number; // 0..1
+  ditherAmount: number; // 0..1 — stipple blend non-dither / dither
 };
 
 export type ProcessResult = {
   canvas: HTMLCanvasElement;
   ms: number;
+  effectiveBlockSize: number;
 };
 
 /**
- * Run the full pixelate → palette → dither pipeline. Each stage has its own
- * blend amount so users can dial in subtle effects.
+ * Compute the actual block size after applying the pixel amount.
+ * 0% → 1 (no effect), 100% → configured blockSize, smooth in between.
  */
+export function effectiveBlockSize(settings: Settings): number {
+  if (settings.blockSize <= 1) return 1;
+  return Math.max(
+    1,
+    Math.round(1 + (settings.blockSize - 1) * settings.pixelAmount)
+  );
+}
+
 export function process(
   source: HTMLImageElement,
   settings: Settings
@@ -44,22 +53,25 @@ export function process(
   const original = ctx.getImageData(0, 0, w, h);
   let img = original;
 
-  // 1. Pixelate (with amount blend back to original)
-  if (settings.blockSize > 1 && settings.pixelAmount > 0) {
-    const pixelated = pixelate(original, settings.blockSize);
-    img = blend(original, pixelated, settings.pixelAmount);
+  // 1. Pixelate — amount controls effective block size (1 → blockSize)
+  const effBlock = effectiveBlockSize(settings);
+  if (effBlock > 1) {
+    img = pixelate(original, effBlock);
   }
   const afterPixel = img;
 
-  // 2. Palette quantize
+  // 2. Palette quantize — stipple-blend pre-quantize and quantized.
+  // At 50% you see a Bayer-pattern of palette colors over the originals;
+  // crisp pixel-art transition, no muddy alpha mids.
   const palette = getPalette(settings.paletteId);
   if (palette.colors.length > 0 && settings.paletteAmount > 0) {
     const quantized = quantize(afterPixel, palette.colors);
-    img = blend(afterPixel, quantized, settings.paletteAmount);
+    img = stippleBlend(afterPixel, quantized, settings.paletteAmount);
   }
   const afterPalette = img;
 
-  // 3. Dither (only if a palette is active and dither mode != none)
+  // 3. Dither — stipple-blend the non-dither (afterPalette) with the dithered.
+  // Both endpoints live in the same palette space so this remains crisp.
   if (
     settings.dither !== "none" &&
     palette.colors.length > 0 &&
@@ -74,12 +86,16 @@ export function process(
       dithered = bayer8(afterPixel, palette.colors);
     }
     if (dithered) {
-      img = blend(afterPalette, dithered, settings.ditherAmount);
+      img = stippleBlend(afterPalette, dithered, settings.ditherAmount);
     }
   }
 
   ctx.putImageData(img, 0, 0);
-  return { canvas: work, ms: performance.now() - t0 };
+  return {
+    canvas: work,
+    ms: performance.now() - t0,
+    effectiveBlockSize: effBlock,
+  };
 }
 
 /**
