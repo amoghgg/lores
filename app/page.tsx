@@ -33,11 +33,54 @@ import { getWebGPU } from "@/lib/gpu/webgpu";
 const BUILD_DATE = "2026.04.27";
 
 type SourceState = {
-  image: HTMLImageElement;
+  image: ImageBitmap;
   filename: string;
   width: number;
   height: number;
+  originalWidth: number;
+  originalHeight: number;
 };
+
+// Cap source at this many pixels before processing. Pixel art doesn't need
+// 12 MP detail — the chunky output looks identical, and CPU stays under 100 ms
+// even at the largest block sizes.
+const MAX_SOURCE_PIXELS = 2_500_000;
+
+async function loadDownscaled(file: File): Promise<SourceState> {
+  let bitmap = await createImageBitmap(file);
+  const originalWidth = bitmap.width;
+  const originalHeight = bitmap.height;
+  let w = originalWidth;
+  let h = originalHeight;
+
+  if (w * h > MAX_SOURCE_PIXELS) {
+    const scale = Math.sqrt(MAX_SOURCE_PIXELS / (w * h));
+    const newW = Math.max(64, Math.round(w * scale));
+    const newH = Math.max(64, Math.round(h * scale));
+    const original = bitmap;
+    bitmap = await createImageBitmap(original, {
+      resizeWidth: newW,
+      resizeHeight: newH,
+      resizeQuality: "high",
+    });
+    original.close();
+    w = newW;
+    h = newH;
+    console.log("[lores] downscaled source", {
+      from: { w: originalWidth, h: originalHeight },
+      to: { w, h },
+    });
+  }
+
+  return {
+    image: bitmap,
+    filename: file.name,
+    width: w,
+    height: h,
+    originalWidth,
+    originalHeight,
+  };
+}
 
 export default function Page() {
   const [source, setSource] = useState<SourceState | null>(null);
@@ -124,7 +167,6 @@ export default function Page() {
     const canvas = liveCanvasRef.current!;
     let raf = 0;
     let cancelled = false;
-    let bitmap: ImageBitmap | null = null;
     let lastReportedAt = 0;
 
     (async () => {
@@ -136,14 +178,6 @@ export default function Page() {
         });
         return;
       }
-
-      // Cache an ImageBitmap for the source so we don't re-decode each frame.
-      const bm = await createImageBitmap(source.image);
-      if (cancelled) {
-        bm.close();
-        return;
-      }
-      bitmap = bm;
 
       console.log("[lores live] render loop started", {
         vizMode: vizModeRef.current,
@@ -180,7 +214,7 @@ export default function Page() {
           : s;
 
         try {
-          const r = await gpu.process(bitmap!, liveSettings, {
+          const r = await gpu.process(source.image, liveSettings, {
             outCanvas: canvas,
             viz: {
               bass: frame.bass,
@@ -215,23 +249,23 @@ export default function Page() {
     return () => {
       cancelled = true;
       cancelAnimationFrame(raf);
-      if (bitmap) bitmap.close();
     };
   }, [live, source]);
 
-  const onFile = (file: File) => {
-    const url = URL.createObjectURL(file);
-    const img = new Image();
-    img.onload = () => {
-      setSource({
-        image: img,
-        filename: file.name,
-        width: img.naturalWidth,
-        height: img.naturalHeight,
-      });
-      URL.revokeObjectURL(url);
-    };
-    img.src = url;
+  const onFile = async (file: File) => {
+    try {
+      // Free the previous bitmap to avoid GPU/system memory bloat across uploads
+      if (source) source.image.close();
+      const next = await loadDownscaled(file);
+      setSource(next);
+    } catch (err) {
+      console.error("[lores] image load failed:", err);
+    }
+  };
+
+  const clearSource = () => {
+    if (source) source.image.close();
+    setSource(null);
   };
 
   const onExport = () => {
@@ -262,7 +296,7 @@ export default function Page() {
       : `[ ${String(settings.blockSize).padStart(3, "0")} ]`;
 
   return (
-    <div className="min-h-[100svh] lg:h-screen flex flex-col bg-ink-100 text-ink-900">
+    <div className="min-h-[100svh] lg:h-screen lg:max-h-screen lg:overflow-hidden flex flex-col bg-ink-100 text-ink-900">
       <Header buildDate={BUILD_DATE} />
 
       {source && (
@@ -270,11 +304,11 @@ export default function Page() {
           filename={source.filename}
           width={source.width}
           height={source.height}
-          onClear={() => setSource(null)}
+          onClear={clearSource}
         />
       )}
 
-      <main className="flex-1 grid lg:grid-cols-[260px_1fr_320px] lg:grid-rows-1 lg:overflow-hidden">
+      <main className="flex-1 lg:min-h-0 grid lg:grid-cols-[260px_1fr_320px] lg:grid-rows-1 lg:overflow-hidden">
         {/* LEFT RAIL — meta (desktop only) */}
         <aside className="hidden lg:flex flex-col border-r border-ink-400 bg-ink-50 text-[10px] tracking-widest uppercase">
           <Section index="01" title="SOURCE" badge={source ? "LOADED" : "EMPTY"}>
@@ -290,7 +324,7 @@ export default function Page() {
                   value={((source.width * source.height) / 1_000_000).toFixed(2)}
                 />
                 <button
-                  onClick={() => setSource(null)}
+                  onClick={clearSource}
                   className="mt-2 w-full text-[10px] tracking-widest uppercase border border-ink-400 hover:border-lime hover:text-lime bg-ink-50 hover:bg-ink-200 py-2 transition-colors"
                 >
                   [ CLEAR ]

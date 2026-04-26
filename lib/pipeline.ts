@@ -34,13 +34,13 @@ export function effectiveBlockSize(settings: Settings): number {
 }
 
 export function process(
-  source: HTMLImageElement,
+  source: HTMLImageElement | ImageBitmap,
   settings: Settings
 ): ProcessResult {
   const t0 = performance.now();
 
-  const w = source.naturalWidth;
-  const h = source.naturalHeight;
+  const w = "naturalWidth" in source ? source.naturalWidth : source.width;
+  const h = "naturalHeight" in source ? source.naturalHeight : source.height;
 
   const work = document.createElement("canvas");
   work.width = w;
@@ -121,7 +121,7 @@ export function upscaleNN(
  * Returns a stable shape with `engine` so the UI can surface which path ran.
  */
 export async function processBest(
-  source: HTMLImageElement,
+  source: HTMLImageElement | ImageBitmap,
   settings: Settings
 ): Promise<ProcessResult & { engine: "gpu" | "cpu" }> {
   const { gpuCanHandle, getWebGPU } = await import("./gpu/webgpu");
