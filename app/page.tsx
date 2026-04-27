@@ -237,8 +237,10 @@ export default function Page() {
             },
             bitmapAlreadyOwned: true,
           });
+          // Throttle status-bar updates to 1 Hz so we don't trigger React
+          // re-renders of the entire control panel on every frame.
           const now = performance.now();
-          if (now - lastReportedAt > 200) {
+          if (now - lastReportedAt > 1000) {
             lastReportedAt = now;
             setOutput((prev) =>
               prev

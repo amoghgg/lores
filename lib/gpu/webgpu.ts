@@ -31,6 +31,11 @@ fn vs(@builtin(vertex_index) vi: u32) -> VSOut {
 }
 `;
 
+// Pixelate via block-decimation: every fragment in the same block samples
+// the same anchor texel (the block's center). One texelFetch per fragment,
+// independent of block size — vital for the audio-reactive bass pump that
+// can push block size up to 48. The previous block-average shader was
+// O(blockSize²) per fragment and choked the GPU during live playback.
 const FRAG_PIXELATE = /* wgsl */ `
 struct Params {
   resolution: vec2f,
@@ -43,25 +48,13 @@ struct Params {
 
 @fragment
 fn fs(@location(0) uv: vec2f) -> @location(0) vec4f {
-  let res = vec2u(params.resolution);
-  let px = vec2u(uv * params.resolution);
-  let bs = max(params.blockSize, 1u);
-  let block = (px / bs) * bs;
-
-  var sum: vec4f = vec4f(0.0);
-  var count: f32 = 0.0;
-  for (var dy: u32 = 0u; dy < 48u; dy = dy + 1u) {
-    if (dy >= bs) { break; }
-    for (var dx: u32 = 0u; dx < 48u; dx = dx + 1u) {
-      if (dx >= bs) { break; }
-      let p = block + vec2u(dx, dy);
-      if (p.x < res.x && p.y < res.y) {
-        sum = sum + textureLoad(src, vec2i(p), 0);
-        count = count + 1.0;
-      }
-    }
-  }
-  return sum / max(count, 1.0);
+  let res = params.resolution;
+  let bs = f32(max(params.blockSize, 1u));
+  let blockOrigin = floor(uv * res / bs) * bs;
+  let centerPx = vec2i(blockOrigin + vec2f(bs * 0.5));
+  let resI = vec2i(res);
+  let clamped = clamp(centerPx, vec2i(0), resI - vec2i(1));
+  return textureLoad(src, clamped, 0);
 }
 `;
 
@@ -357,6 +350,9 @@ export class WebGPUPipeline {
   private texB: GPUTexture | null = null;
   private texC: GPUTexture | null = null;
 
+  // Source-bitmap cache: skip re-uploading the same bitmap every frame
+  private lastUploadedSource: ImageBitmap | null = null;
+
   private bufPixelate: GPUBuffer;
   private bufQuantize: GPUBuffer;
   private bufBayer: GPUBuffer;
@@ -536,6 +532,7 @@ export class WebGPUPipeline {
   private resize(w: number, h: number) {
     if (this.width === w && this.height === h && this.texSource) return;
     this.dispose();
+    this.lastUploadedSource = null; // texSource was destroyed → cache is stale
     const usage =
       GPUTextureUsage.TEXTURE_BINDING |
       GPUTextureUsage.COPY_DST |
@@ -623,22 +620,30 @@ export class WebGPUPipeline {
     if (outCanvas.height !== h) outCanvas.height = h;
     const ctx = this.getCanvasContext(outCanvas);
 
-    // Upload source bitmap to texSource. createImageBitmap fails on already-bitmap
-    // sources in some browsers; skip in that case (live audio loop reuses bitmaps).
-    let bitmap: ImageBitmap;
-    if (source instanceof ImageBitmap) {
-      bitmap = source;
-    } else {
-      bitmap = await createImageBitmap(source);
-    }
-    this.device.queue.copyExternalImageToTexture(
-      { source: bitmap },
-      { texture: this.texSource! },
-      [w, h]
-    );
-    if (!(source instanceof ImageBitmap) || !options?.bitmapAlreadyOwned) {
-      // Only close if we created it here
-      if (!(source instanceof ImageBitmap)) bitmap.close();
+    // Upload source bitmap to texSource — but only if it changed since the last
+    // call. The audio-reactive loop calls process() at 60Hz with the same bitmap,
+    // and copyExternalImageToTexture isn't free.
+    const sourceIsBitmap = source instanceof ImageBitmap;
+    const sameAsCached =
+      sourceIsBitmap && this.lastUploadedSource === source;
+    if (!sameAsCached) {
+      let bitmap: ImageBitmap;
+      if (sourceIsBitmap) {
+        bitmap = source;
+      } else {
+        bitmap = await createImageBitmap(source);
+      }
+      this.device.queue.copyExternalImageToTexture(
+        { source: bitmap },
+        { texture: this.texSource! },
+        [w, h]
+      );
+      if (sourceIsBitmap) {
+        this.lastUploadedSource = bitmap;
+      } else {
+        // We created this bitmap; close it since we don't track it
+        bitmap.close();
+      }
     }
 
     const encoder = this.device.createCommandEncoder();
