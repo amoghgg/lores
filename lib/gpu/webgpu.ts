@@ -996,9 +996,12 @@ export class WebGPUPipeline {
     if (this.width === w && this.height === h && this.texSource) return;
     this.dispose();
     this.lastUploadedSource = null; // texSource was destroyed → cache is stale
+    // COPY_SRC is required so the readback path can copyTextureToBuffer the
+    // final work texture into a host-readable buffer for export.
     const usage =
       GPUTextureUsage.TEXTURE_BINDING |
       GPUTextureUsage.COPY_DST |
+      GPUTextureUsage.COPY_SRC |
       GPUTextureUsage.RENDER_ATTACHMENT;
     this.width = w;
     this.height = h;
