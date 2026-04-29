@@ -43,6 +43,7 @@ const config: Config = {
         "fade-up": "fadeUp 0.6s steps(8, end) both",
         "blink": "blink 1.2s steps(2, end) infinite",
         "scan": "scan 8s linear infinite",
+        "loading-stripe": "loadingStripe 1s linear infinite",
       },
       keyframes: {
         fadeUp: {
@@ -56,6 +57,10 @@ const config: Config = {
         scan: {
           "0%": { transform: "translateY(-100%)" },
           "100%": { transform: "translateY(100%)" },
+        },
+        loadingStripe: {
+          "0%": { transform: "translateX(-100%)" },
+          "100%": { transform: "translateX(400%)" },
         },
       },
     },

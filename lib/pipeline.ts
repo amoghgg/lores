@@ -229,6 +229,8 @@ export async function processBest(
                 opacity: overlay.opacity,
               }
             : undefined,
+          // Static path = export-ready canvas required.
+          awaitCompletion: true,
         });
         return { ...r, engine: "gpu" };
       } catch (err) {

@@ -116,6 +116,13 @@ export default function Page() {
     ms: number;
     engine: "gpu" | "cpu";
   } | null>(null);
+  // True between the moment a setting/source change is detected and the moment
+  // the resulting canvas is fully presented + GPU-completed. Drives the loading
+  // bar and disables the export button so users can't grab a half-rendered PNG.
+  const [processing, setProcessing] = useState(false);
+  // Increments while a download blob is being assembled — kept separate so we
+  // can show progress on the export button without affecting the preview bar.
+  const [exporting, setExporting] = useState(false);
 
   // ─── Texture overlay state ───────────────────────────────────────────
   const [texture, setTexture] = useState<TextureState | null>(null);
@@ -186,15 +193,21 @@ export default function Page() {
   // ─── Static processing path ──────────────────────────────────────────
   const debounceRef = useRef<number | null>(null);
   useEffect(() => {
-    if (!source || live) return;
+    if (!source || live) {
+      setProcessing(false);
+      return;
+    }
     if (debounceRef.current) window.clearTimeout(debounceRef.current);
     let cancelled = false;
+    setProcessing(true);
     debounceRef.current = window.setTimeout(async () => {
       try {
         const result = await processBest(source.image, settings, overlayInput);
         if (!cancelled) setOutput(result);
       } catch (err) {
         console.error(err);
+      } finally {
+        if (!cancelled) setProcessing(false);
       }
     }, 80);
     return () => {
@@ -364,15 +377,26 @@ export default function Page() {
     setTexture(null);
   };
 
-  const onExport = () => {
-    if (!output) return;
-    const upscaled = upscaleNN(output.canvas, outScale);
-    const base = source?.filename.replace(/\.[^.]+$/, "") ?? "lores";
-    const palette = getPalette(settings.paletteId);
-    const tag = `${palette.id}-${settings.blockSize}px${
-      settings.dither !== "none" ? `-${settings.dither}` : ""
-    }${outScale > 1 ? `-x${outScale}` : ""}`;
-    downloadPNG(upscaled, `${base}-${tag}.png`);
+  const onExport = async () => {
+    if (!output || processing || exporting) return;
+    setExporting(true);
+    try {
+      // Yield once so the loading state actually paints before we block the
+      // main thread on toBlob/encodePNG (can be 100-500ms for 4x/8x scale).
+      await new Promise((r) => requestAnimationFrame(() => r(null)));
+      const upscaled = upscaleNN(output.canvas, outScale);
+      const base = source?.filename.replace(/\.[^.]+$/, "") ?? "lores";
+      const palette = getPalette(settings.paletteId);
+      const tag = `${palette.id}-${settings.blockSize}px${
+        settings.dither !== "none" ? `-${settings.dither}` : ""
+      }${outScale > 1 ? `-x${outScale}` : ""}`;
+      downloadPNG(upscaled, `${base}-${tag}.png`);
+    } finally {
+      // toBlob is async under the hood but the user-visible work is done once
+      // the click on the synthetic <a> fires; release the busy state on the
+      // next tick so the bar doesn't flash off too early.
+      setTimeout(() => setExporting(false), 200);
+    }
   };
 
   const paletteName = useMemo(
@@ -466,6 +490,9 @@ export default function Page() {
             <PreviewCanvas canvas={output.canvas} />
           ) : (
             <DropZone onFile={onFile} />
+          )}
+          {(processing || exporting) && (
+            <LoadingBar label={exporting ? "ENCODING PNG" : "PROCESSING"} />
           )}
         </div>
 
@@ -573,10 +600,16 @@ export default function Page() {
             />
             <button
               onClick={onExport}
-              disabled={!output}
+              disabled={!output || processing || exporting}
               className="mt-3 w-full px-4 py-3 border border-lime bg-lime text-ink-100 hover:bg-lime-glow active:bg-lime-glow disabled:bg-ink-400 disabled:border-ink-400 disabled:text-ink-700 disabled:cursor-not-allowed text-[11px] tracking-widest uppercase font-bold transition-colors"
             >
-              {output ? "[ DOWNLOAD PNG ]" : "[ AWAITING INPUT ]"}
+              {!output
+                ? "[ AWAITING INPUT ]"
+                : processing
+                ? "[ PROCESSING… ]"
+                : exporting
+                ? "[ ENCODING… ]"
+                : "[ DOWNLOAD PNG ]"}
             </button>
             {output && (
               <div className="mt-3 grid grid-cols-2 gap-1 text-[9px] tracking-widest text-ink-700">
@@ -627,9 +660,14 @@ export default function Page() {
           {!live && (
             <button
               onClick={onExport}
-              className="px-4 py-2 border border-lime bg-lime text-ink-100 active:bg-lime-glow text-[11px] tracking-widest uppercase font-bold flex-shrink-0"
+              disabled={processing || exporting}
+              className="px-4 py-2 border border-lime bg-lime text-ink-100 active:bg-lime-glow disabled:bg-ink-400 disabled:border-ink-400 disabled:text-ink-700 text-[11px] tracking-widest uppercase font-bold flex-shrink-0"
             >
-              [ DOWNLOAD ]
+              {processing
+                ? "[ PROCESSING… ]"
+                : exporting
+                ? "[ ENCODING… ]"
+                : "[ DOWNLOAD ]"}
             </button>
           )}
         </div>
@@ -645,6 +683,25 @@ export default function Page() {
         outScale={outScale}
         engine={output?.engine ?? null}
       />
+    </div>
+  );
+}
+
+function LoadingBar({ label }: { label: string }) {
+  return (
+    <div className="absolute inset-x-0 top-0 z-20 pointer-events-none">
+      <div className="flex items-center gap-2 px-3 py-1.5 bg-ink-50/85 backdrop-blur border-b border-ink-400">
+        <span className="text-[9px] tracking-widest text-lime animate-blink">●</span>
+        <span className="text-[9px] tracking-widest uppercase text-ink-800">
+          {label}
+        </span>
+        <span className="ml-auto text-[9px] tracking-widest text-ink-700">
+          please wait
+        </span>
+      </div>
+      <div className="h-0.5 w-full bg-ink-300 overflow-hidden">
+        <div className="h-full w-1/4 bg-lime animate-loading-stripe" />
+      </div>
     </div>
   );
 }

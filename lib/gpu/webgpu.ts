@@ -1069,6 +1069,14 @@ export class WebGPUPipeline {
       viz?: VizParams;
       overlay?: OverlayParams;
       bitmapAlreadyOwned?: boolean;
+      /**
+       * If true, await `queue.onSubmittedWorkDone()` after submit so the canvas
+       * is guaranteed presented before this resolves. Static export path needs
+       * this — `toBlob` / `drawImage` on a not-yet-presented WebGPU canvas
+       * yields a blank/partial frame. Live audio loop should pass false (60fps
+       * pipeline can't afford a synchronous GPU stall every frame).
+       */
+      awaitCompletion?: boolean;
     }
   ): Promise<GPUProcessResult> {
     const t0 = performance.now();
@@ -1515,6 +1523,10 @@ export class WebGPUPipeline {
     }
 
     this.device.queue.submit([encoder.finish()]);
+
+    if (options?.awaitCompletion) {
+      await this.device.queue.onSubmittedWorkDone();
+    }
 
     return {
       canvas: outCanvas,
