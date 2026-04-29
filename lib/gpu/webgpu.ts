@@ -1071,12 +1071,19 @@ export class WebGPUPipeline {
       bitmapAlreadyOwned?: boolean;
       /**
        * If true, await `queue.onSubmittedWorkDone()` after submit so the canvas
-       * is guaranteed presented before this resolves. Static export path needs
-       * this — `toBlob` / `drawImage` on a not-yet-presented WebGPU canvas
-       * yields a blank/partial frame. Live audio loop should pass false (60fps
-       * pipeline can't afford a synchronous GPU stall every frame).
+       * is guaranteed presented before this resolves. Live audio loop should
+       * pass false (60fps pipeline can't afford a synchronous GPU stall every
+       * frame). Ignored when `readback` is true since readback awaits the map.
        */
       awaitCompletion?: boolean;
+      /**
+       * If true, skip the WebGPU canvas present pass and instead copy the final
+       * texture back to a CPU buffer + bake it into a fresh 2D canvas. This
+       * yields stable, export-safe pixels — drawImage/toBlob on a WebGPU canvas
+       * is timing-sensitive, especially right after upload, which is what was
+       * causing "the first few downloads are trash". Static path uses this.
+       */
+      readback?: boolean;
     }
   ): Promise<GPUProcessResult> {
     const t0 = performance.now();
@@ -1087,10 +1094,20 @@ export class WebGPUPipeline {
       "naturalHeight" in source ? source.naturalHeight : source.height;
     this.resize(w, h);
 
-    const outCanvas = options?.outCanvas ?? document.createElement("canvas");
-    if (outCanvas.width !== w) outCanvas.width = w;
-    if (outCanvas.height !== h) outCanvas.height = h;
-    const ctx = this.getCanvasContext(outCanvas);
+    // Readback mode skips the WebGPU canvas entirely (compositor presentation
+    // can be flaky, especially the first frame). We render to work textures
+    // then copy the final result to a CPU buffer and bake it into a 2D canvas.
+    const useReadback = options?.readback === true;
+
+    const outCanvas =
+      !useReadback
+        ? options?.outCanvas ?? document.createElement("canvas")
+        : null;
+    if (outCanvas) {
+      if (outCanvas.width !== w) outCanvas.width = w;
+      if (outCanvas.height !== h) outCanvas.height = h;
+    }
+    const ctx = outCanvas ? this.getCanvasContext(outCanvas) : null;
 
     // Upload source bitmap to texSource — but only if it changed since the last
     // call. The audio-reactive loop calls process() at 60Hz with the same bitmap,
@@ -1443,8 +1460,58 @@ export class WebGPUPipeline {
       swap();
     }
 
+    // ─── 5. READBACK PATH (export-safe 2D canvas) ───────────────────────
+    if (useReadback) {
+      // Row stride must be a multiple of 256 for copyTextureToBuffer.
+      const bytesPerRow = Math.ceil((w * 4) / 256) * 256;
+      const readbackBuf = this.device.createBuffer({
+        size: bytesPerRow * h,
+        usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+      });
+      encoder.copyTextureToBuffer(
+        { texture: currentTex },
+        { buffer: readbackBuf, bytesPerRow, rowsPerImage: h },
+        [w, h]
+      );
+      this.device.queue.submit([encoder.finish()]);
+
+      await readbackBuf.mapAsync(GPUMapMode.READ);
+      const padded = new Uint8Array(readbackBuf.getMappedRange());
+
+      const exportCanvas = document.createElement("canvas");
+      exportCanvas.width = w;
+      exportCanvas.height = h;
+      const ctx2d = exportCanvas.getContext("2d");
+      if (!ctx2d) throw new Error("2D context unavailable for export canvas");
+      const imageData = ctx2d.createImageData(w, h);
+      const tightRowBytes = w * 4;
+      if (bytesPerRow === tightRowBytes) {
+        imageData.data.set(padded.subarray(0, tightRowBytes * h));
+      } else {
+        // Strip the row padding the GPU required.
+        for (let y = 0; y < h; y++) {
+          imageData.data.set(
+            padded.subarray(
+              y * bytesPerRow,
+              y * bytesPerRow + tightRowBytes
+            ),
+            y * tightRowBytes
+          );
+        }
+      }
+      ctx2d.putImageData(imageData, 0, 0);
+      readbackBuf.unmap();
+      readbackBuf.destroy();
+
+      return {
+        canvas: exportCanvas,
+        ms: performance.now() - t0,
+        effectiveBlockSize: effBlock,
+      };
+    }
+
     // ─── 5. PRESENT to canvas (with optional viz post-FX) ────────────────
-    const targetTex = ctx.getCurrentTexture();
+    const targetTex = ctx!.getCurrentTexture();
 
     const useViz = !!options?.viz && options.viz.mode !== 0;
     if (useViz) {
@@ -1529,7 +1596,7 @@ export class WebGPUPipeline {
     }
 
     return {
-      canvas: outCanvas,
+      canvas: outCanvas!,
       ms: performance.now() - t0,
       effectiveBlockSize: effBlock,
     };

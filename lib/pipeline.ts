@@ -229,8 +229,10 @@ export async function processBest(
                 opacity: overlay.opacity,
               }
             : undefined,
-          // Static path = export-ready canvas required.
-          awaitCompletion: true,
+          // Static path → texture readback to a real 2D canvas. Side-steps
+          // every WebGPU compositor / first-frame timing issue, so what you
+          // see in the preview is bit-exactly what gets exported.
+          readback: true,
         });
         return { ...r, engine: "gpu" };
       } catch (err) {
