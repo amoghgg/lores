@@ -105,10 +105,10 @@ export function upscaleNN(
   source: HTMLCanvasElement,
   scale: number
 ): HTMLCanvasElement {
-  if (scale <= 1) return source;
+  const s = Math.max(1, scale);
   const out = document.createElement("canvas");
-  out.width = source.width * scale;
-  out.height = source.height * scale;
+  out.width = source.width * s;
+  out.height = source.height * s;
   const ctx = out.getContext("2d");
   if (!ctx) throw new Error("2D context unavailable");
   ctx.imageSmoothingEnabled = false;
