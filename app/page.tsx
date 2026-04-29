@@ -17,6 +17,12 @@ import {
   VIZ_MODE_BITS,
 } from "@/components/VisualizeSection";
 import type { VizMode } from "@/components/VisualizeSection";
+import {
+  TextureSection,
+  type BlendName,
+  type FitName,
+  type TextureMeta,
+} from "@/components/TextureSection";
 
 import {
   processBest,
@@ -25,10 +31,15 @@ import {
   effectiveBlockSize,
   type DitherMode,
   type Settings,
+  type OverlayInput,
 } from "@/lib/pipeline";
 import { getPalette, PALETTES } from "@/lib/palettes";
 import { getAudio } from "@/lib/audio";
-import { getWebGPU } from "@/lib/gpu/webgpu";
+import {
+  getWebGPU,
+  OVERLAY_BLEND_BITS,
+  OVERLAY_FIT_BITS,
+} from "@/lib/gpu/webgpu";
 
 const BUILD_DATE = "2026.04.27";
 
@@ -39,6 +50,13 @@ type SourceState = {
   height: number;
   originalWidth: number;
   originalHeight: number;
+};
+
+type TextureState = {
+  image: ImageBitmap;
+  filename: string;
+  width: number;
+  height: number;
 };
 
 // Cap source at this many pixels before processing. Pixel art doesn't need
@@ -99,6 +117,38 @@ export default function Page() {
     engine: "gpu" | "cpu";
   } | null>(null);
 
+  // ─── Texture overlay state ───────────────────────────────────────────
+  const [texture, setTexture] = useState<TextureState | null>(null);
+  const [textureBlend, setTextureBlend] = useState<BlendName>("multiply");
+  const [textureFit, setTextureFit] = useState<FitName>("cover");
+  const [textureOpacity, setTextureOpacity] = useState<number>(60);
+
+  const overlayInput: OverlayInput | null = useMemo(() => {
+    if (!texture) return null;
+    return {
+      image: texture.image,
+      width: texture.width,
+      height: texture.height,
+      blendMode: textureBlend as GlobalCompositeOperation,
+      blendBit: OVERLAY_BLEND_BITS[textureBlend],
+      fitBit: OVERLAY_FIT_BITS[textureFit],
+      fit: textureFit,
+      opacity: textureOpacity / 100,
+    };
+  }, [texture, textureBlend, textureFit, textureOpacity]);
+
+  const textureMeta: TextureMeta | null = useMemo(
+    () =>
+      texture
+        ? {
+            filename: texture.filename,
+            width: texture.width,
+            height: texture.height,
+          }
+        : null,
+    [texture]
+  );
+
   // ─── Visualize state ─────────────────────────────────────────────────
   const [vizMode, setVizMode] = useState<VizMode>("off");
   const [vizIntensity, setVizIntensity] = useState<number>(100);
@@ -130,6 +180,8 @@ export default function Page() {
   vizIntensityRef.current = vizIntensity;
   const bassBumpRef = useRef(bassBump);
   bassBumpRef.current = bassBump;
+  const overlayRef = useRef(overlayInput);
+  overlayRef.current = overlayInput;
 
   // ─── Static processing path ──────────────────────────────────────────
   const debounceRef = useRef<number | null>(null);
@@ -139,7 +191,7 @@ export default function Page() {
     let cancelled = false;
     debounceRef.current = window.setTimeout(async () => {
       try {
-        const result = await processBest(source.image, settings);
+        const result = await processBest(source.image, settings, overlayInput);
         if (!cancelled) setOutput(result);
       } catch (err) {
         console.error(err);
@@ -149,7 +201,7 @@ export default function Page() {
       cancelled = true;
       if (debounceRef.current) window.clearTimeout(debounceRef.current);
     };
-  }, [source, settings, live]);
+  }, [source, settings, live, overlayInput]);
 
   // ─── Live audio-reactive render loop ─────────────────────────────────
   // Deps intentionally just [live, source]. Settings/mode/intensity flow in
@@ -222,6 +274,11 @@ export default function Page() {
             }
           : s;
 
+        // Push the latest texture upload state to the GPU pipeline. The setter
+        // is identity-cached so this is free when nothing changed.
+        const ov = overlayRef.current;
+        gpu.setOverlayTexture(ov ? ov.image : null);
+
         try {
           const r = await gpu.process(source.image, liveSettings, {
             outCanvas: canvas,
@@ -235,6 +292,13 @@ export default function Page() {
               mode: VIZ_MODE_BITS[vm],
               fft: frame.fft,
             },
+            overlay: ov
+              ? {
+                  blendMode: ov.blendBit,
+                  fitMode: ov.fitBit,
+                  opacity: ov.opacity,
+                }
+              : undefined,
             bitmapAlreadyOwned: true,
           });
           // Throttle status-bar updates to 1 Hz so we don't trigger React
@@ -277,6 +341,27 @@ export default function Page() {
   const clearSource = () => {
     if (source) source.image.close();
     setSource(null);
+  };
+
+  const onTextureFile = async (file: File) => {
+    try {
+      const bitmap = await createImageBitmap(file);
+      // Free the previous overlay bitmap so we don't leak across uploads.
+      if (texture) texture.image.close();
+      setTexture({
+        image: bitmap,
+        filename: file.name,
+        width: bitmap.width,
+        height: bitmap.height,
+      });
+    } catch (err) {
+      console.error("[lores] texture load failed:", err);
+    }
+  };
+
+  const clearTexture = () => {
+    if (texture) texture.image.close();
+    setTexture(null);
   };
 
   const onExport = () => {
@@ -431,11 +516,17 @@ export default function Page() {
             <RadioBoxes<DitherMode>
               value={settings.dither}
               onChange={(dither) => setSettings((s) => ({ ...s, dither }))}
+              cols={3}
               options={[
                 { value: "none", label: "NONE", hint: "flat quantize" },
                 { value: "floyd", label: "F·STEIN", hint: "error diffusion" },
+                { value: "atkinson", label: "ATKINSON", hint: "1984 mac, crisp" },
+                { value: "jarvis", label: "JARVIS", hint: "wide kernel" },
                 { value: "bayer4", label: "BAYER 4", hint: "ordered 4×4" },
                 { value: "bayer8", label: "BAYER 8", hint: "ordered 8×8" },
+                { value: "bluenoise", label: "BLUE NOISE", hint: "perceptual" },
+                { value: "ign", label: "IGN", hint: "hash dither" },
+                { value: "halftone", label: "HALFTONE", hint: "dot screen" },
               ]}
             />
             {showDitherAmount && (
@@ -448,6 +539,18 @@ export default function Page() {
             )}
           </Section>
 
+          <TextureSection
+            texture={textureMeta}
+            blend={textureBlend}
+            opacity={textureOpacity}
+            fit={textureFit}
+            onLoad={onTextureFile}
+            onClear={clearTexture}
+            onBlendChange={setTextureBlend}
+            onOpacityChange={setTextureOpacity}
+            onFitChange={setTextureFit}
+          />
+
           <VisualizeSection
             mode={vizMode}
             intensity={vizIntensity}
@@ -457,7 +560,7 @@ export default function Page() {
             onBassBumpChange={setBassBump}
           />
 
-          <Section index="06" title="EXPORT" badge={`${outScale}× SCALE`}>
+          <Section index="07" title="EXPORT" badge={`${outScale}× SCALE`}>
             <RadioBoxes<string>
               value={String(outScale)}
               onChange={(v) => setOutScale(Number(v))}

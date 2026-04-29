@@ -154,7 +154,7 @@ export function VisualizeSection({
       : "EMPTY";
 
   return (
-    <Section index="05" title="VISUALIZE" badge={badge}>
+    <Section index="06" title="VISUALIZE" badge={badge}>
       <div className="space-y-3">
         {/* Source toggle — file vs mic */}
         <div>

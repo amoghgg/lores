@@ -152,6 +152,237 @@ fn fs(@location(0) uv: vec2f) -> @location(0) vec4f {
 }
 `;
 
+// Blue noise dither — samples a precomputed 64×64 LUT (generated at init).
+// Perceptually flat, no Bayer-style geometric patterns. Sampler is nearest +
+// repeat so the LUT tiles cleanly across the source.
+const FRAG_BLUENOISE = /* wgsl */ `
+struct Params {
+  resolution: vec2f,
+  paletteCount: u32,
+  strength: f32,
+  colors: array<vec4f, 32>,
+};
+
+@group(0) @binding(0) var samp: sampler;
+@group(0) @binding(1) var src: texture_2d<f32>;
+@group(0) @binding(2) var noise: texture_2d<f32>;
+@group(0) @binding(3) var<uniform> params: Params;
+
+@fragment
+fn fs(@location(0) uv: vec2f) -> @location(0) vec4f {
+  let px = vec2u(uv * params.resolution);
+  let nuv = vec2i(i32(px.x % 64u), i32(px.y % 64u));
+  let n = textureLoad(noise, nuv, 0).r - 0.5;
+  let c = textureSample(src, samp, uv);
+  let biased = clamp(c.rgb + vec3f(n * params.strength), vec3f(0.0), vec3f(1.0));
+
+  var best: vec3f = params.colors[0].rgb;
+  var bestDist: f32 = 1e9;
+  for (var i: u32 = 0u; i < 32u; i = i + 1u) {
+    if (i >= params.paletteCount) { break; }
+    let p = params.colors[i].rgb;
+    let d = biased - p;
+    let dist = dot(d, d);
+    if (dist < bestDist) {
+      bestDist = dist;
+      best = p;
+    }
+  }
+  return vec4f(best, c.a);
+}
+`;
+
+// Interleaved Gradient Noise (Jorge Jimenez / Frostbite). Hash-based, no LUT.
+// Tiny but pleasing pattern, ~zero memory cost.
+const FRAG_IGN = /* wgsl */ `
+struct Params {
+  resolution: vec2f,
+  paletteCount: u32,
+  strength: f32,
+  colors: array<vec4f, 32>,
+};
+
+@group(0) @binding(0) var samp: sampler;
+@group(0) @binding(1) var src: texture_2d<f32>;
+@group(0) @binding(2) var<uniform> params: Params;
+
+fn ign(p: vec2f) -> f32 {
+  let m = vec3f(0.06711056, 0.00583715, 52.9829189);
+  return fract(m.z * fract(dot(p, m.xy)));
+}
+
+@fragment
+fn fs(@location(0) uv: vec2f) -> @location(0) vec4f {
+  let px = uv * params.resolution;
+  let n = ign(px) - 0.5;
+  let c = textureSample(src, samp, uv);
+  let biased = clamp(c.rgb + vec3f(n * params.strength), vec3f(0.0), vec3f(1.0));
+
+  var best: vec3f = params.colors[0].rgb;
+  var bestDist: f32 = 1e9;
+  for (var i: u32 = 0u; i < 32u; i = i + 1u) {
+    if (i >= params.paletteCount) { break; }
+    let p = params.colors[i].rgb;
+    let d = biased - p;
+    let dist = dot(d, d);
+    if (dist < bestDist) {
+      bestDist = dist;
+      best = p;
+    }
+  }
+  return vec4f(best, c.a);
+}
+`;
+
+// Halftone dot-screen — Photoshop-style "Color Halftone" feel. Each cell maps
+// luminance to a dot radius; bias the source toward white/black accordingly,
+// then quantize to palette so colors stay in the chosen aesthetic.
+const FRAG_HALFTONE = /* wgsl */ `
+struct Params {
+  resolution: vec2f,
+  paletteCount: u32,
+  cellSize: u32,
+  colors: array<vec4f, 32>,
+};
+
+@group(0) @binding(0) var samp: sampler;
+@group(0) @binding(1) var src: texture_2d<f32>;
+@group(0) @binding(2) var<uniform> params: Params;
+
+@fragment
+fn fs(@location(0) uv: vec2f) -> @location(0) vec4f {
+  let px = uv * params.resolution;
+  let cs = f32(max(params.cellSize, 2u));
+  let cell = floor(px / cs);
+  let cellCenter = (cell + vec2f(0.5)) * cs;
+  let centerPx = vec2i(clamp(cellCenter, vec2f(0.0), params.resolution - vec2f(1.0)));
+  let centerCol = textureLoad(src, centerPx, 0);
+  let lum = dot(centerCol.rgb, vec3f(0.299, 0.587, 0.114));
+  let r = length(px - cellCenter) / (cs * 0.5);
+  let radius = sqrt(clamp(1.0 - lum, 0.0, 1.0));
+  let inside = step(r, radius);
+  // inside dot = pull toward black; outside = pull toward white
+  let bias = (inside * 2.0 - 1.0) * (-0.4);
+  let biased = clamp(centerCol.rgb + vec3f(bias), vec3f(0.0), vec3f(1.0));
+
+  var best: vec3f = params.colors[0].rgb;
+  var bestDist: f32 = 1e9;
+  for (var i: u32 = 0u; i < 32u; i = i + 1u) {
+    if (i >= params.paletteCount) { break; }
+    let p = params.colors[i].rgb;
+    let d = biased - p;
+    let dist = dot(d, d);
+    if (dist < bestDist) {
+      bestDist = dist;
+      best = p;
+    }
+  }
+  return vec4f(best, centerCol.a);
+}
+`;
+
+// User-uploaded texture overlay with Photoshop-style blend modes. Single pass:
+// resample texture in fit/cover/tile space, then composite onto the dithered
+// source via blendMode + opacity.
+const FRAG_OVERLAY = /* wgsl */ `
+struct Params {
+  resolution: vec2f,
+  textureSize: vec2f,
+  blendMode: u32,
+  fitMode: u32,
+  opacity: f32,
+  _pad: f32,
+};
+
+@group(0) @binding(0) var samp: sampler;
+@group(0) @binding(1) var src: texture_2d<f32>;
+@group(0) @binding(2) var overlay: texture_2d<f32>;
+@group(0) @binding(3) var<uniform> p: Params;
+
+fn softLight1(b: f32, s: f32) -> f32 {
+  // Photoshop soft-light formula
+  if (s <= 0.5) {
+    return b - (1.0 - 2.0 * s) * b * (1.0 - b);
+  }
+  var d: f32;
+  if (b <= 0.25) {
+    d = ((16.0 * b - 12.0) * b + 4.0) * b;
+  } else {
+    d = sqrt(b);
+  }
+  return b + (2.0 * s - 1.0) * (d - b);
+}
+
+@fragment
+fn fs(@location(0) uv: vec2f) -> @location(0) vec4f {
+  let base = textureSample(src, samp, uv);
+
+  var tUV: vec2f;
+  var inBounds: bool = true;
+
+  if (p.fitMode == 1u) {
+    tUV = fract(uv * p.resolution / max(p.textureSize, vec2f(1.0)));
+  } else {
+    let sx = p.resolution.x / max(p.textureSize.x, 1.0);
+    let sy = p.resolution.y / max(p.textureSize.y, 1.0);
+    var sFac: f32;
+    if (p.fitMode == 0u) { sFac = max(sx, sy); }
+    else { sFac = min(sx, sy); }
+    let centerOffset = uv * p.resolution - p.resolution * 0.5;
+    let texPx = centerOffset / sFac + p.textureSize * 0.5;
+    tUV = texPx / max(p.textureSize, vec2f(1.0));
+    if (p.fitMode == 2u) {
+      inBounds = tUV.x >= 0.0 && tUV.x <= 1.0 && tUV.y >= 0.0 && tUV.y <= 1.0;
+    } else {
+      tUV = clamp(tUV, vec2f(0.0), vec2f(1.0));
+    }
+  }
+
+  if (!inBounds) { return base; }
+
+  let tex = textureSample(overlay, samp, tUV);
+  let effOpacity = tex.a * p.opacity;
+
+  let b = base.rgb;
+  let s = tex.rgb;
+  var blended: vec3f;
+
+  if (p.blendMode == 0u) {
+    blended = s;
+  } else if (p.blendMode == 1u) {
+    blended = b * s;
+  } else if (p.blendMode == 2u) {
+    blended = vec3f(1.0) - (vec3f(1.0) - b) * (vec3f(1.0) - s);
+  } else if (p.blendMode == 3u) {
+    blended = select(
+      vec3f(1.0) - 2.0 * (vec3f(1.0) - b) * (vec3f(1.0) - s),
+      2.0 * b * s,
+      b < vec3f(0.5)
+    );
+  } else if (p.blendMode == 4u) {
+    blended = vec3f(
+      softLight1(b.x, s.x),
+      softLight1(b.y, s.y),
+      softLight1(b.z, s.z)
+    );
+  } else if (p.blendMode == 5u) {
+    blended = select(
+      vec3f(1.0) - 2.0 * (vec3f(1.0) - b) * (vec3f(1.0) - s),
+      2.0 * b * s,
+      s < vec3f(0.5)
+    );
+  } else if (p.blendMode == 6u) {
+    blended = abs(b - s);
+  } else {
+    let denom = max(s, vec3f(0.001));
+    blended = clamp(vec3f(1.0) - (vec3f(1.0) - b) / denom, vec3f(0.0), vec3f(1.0));
+  }
+
+  let outRgb = mix(b, blended, effOpacity);
+  return vec4f(outRgb, base.a);
+}
+`;
+
 const FRAG_STIPPLE = /* wgsl */ `
 struct Params {
   resolution: vec2f,
@@ -324,15 +555,24 @@ export class WebGPUPipeline {
   private modPixelate!: GPUShaderModule;
   private modQuantize!: GPUShaderModule;
   private modBayer!: GPUShaderModule;
+  private modBlueNoise!: GPUShaderModule;
+  private modIGN!: GPUShaderModule;
+  private modHalftone!: GPUShaderModule;
+  private modOverlay!: GPUShaderModule;
   private modStipple!: GPUShaderModule;
   private modCopy!: GPUShaderModule;
   private modVizFx!: GPUShaderModule;
 
   private samplerLinear!: GPUSampler;
+  private samplerLinearFilter!: GPUSampler;
 
   private pipelinePixelate!: GPURenderPipeline;
   private pipelineQuantize!: GPURenderPipeline;
   private pipelineBayer!: GPURenderPipeline;
+  private pipelineBlueNoise!: GPURenderPipeline;
+  private pipelineIGN!: GPURenderPipeline;
+  private pipelineHalftone!: GPURenderPipeline;
+  private pipelineOverlay!: GPURenderPipeline;
   private pipelineStipple!: GPURenderPipeline;
   private pipelineCopyToCanvas!: GPURenderPipeline;
   private pipelineCopyToWork!: GPURenderPipeline;
@@ -350,12 +590,25 @@ export class WebGPUPipeline {
   private texB: GPUTexture | null = null;
   private texC: GPUTexture | null = null;
 
+  // Blue-noise LUT (64×64 r8unorm, populated once at compile time).
+  private texBlueNoise: GPUTexture | null = null;
+
+  // User-uploaded overlay texture. Sized to the source image; kept across
+  // process() calls until cleared or replaced.
+  private texOverlay: GPUTexture | null = null;
+  private overlayWidth = 0;
+  private overlayHeight = 0;
+  private lastUploadedOverlay: ImageBitmap | null = null;
+
   // Source-bitmap cache: skip re-uploading the same bitmap every frame
   private lastUploadedSource: ImageBitmap | null = null;
 
   private bufPixelate: GPUBuffer;
   private bufQuantize: GPUBuffer;
   private bufBayer: GPUBuffer;
+  private bufNoiseDither: GPUBuffer;
+  private bufHalftone: GPUBuffer;
+  private bufOverlay: GPUBuffer;
   private bufStipple: GPUBuffer;
 
   static async create(): Promise<WebGPUPipeline | null> {
@@ -391,6 +644,22 @@ export class WebGPUPipeline {
       size: 16 + 32 * 16,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
+    // Noise-dither uniform (Blue-noise + IGN share layout):
+    //   vec2 res(8) + count(4) + strength(4) = 16 header, then 32 vec4 = 528
+    this.bufNoiseDither = device.createBuffer({
+      size: 16 + 32 * 16,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    // Halftone uniform: vec2 res(8) + count(4) + cellSize(4) = 16 header + 32 vec4 = 528
+    this.bufHalftone = device.createBuffer({
+      size: 16 + 32 * 16,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    // Overlay uniform: vec2 res(8) + vec2 texSize(8) + blend(4) + fit(4) + opacity(4) + pad(4) = 32
+    this.bufOverlay = device.createBuffer({
+      size: 32,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
     // Stipple uniform: vec2 res(8) + amount(4) + pad(4) = 16
     this.bufStipple = device.createBuffer({
       size: 16,
@@ -415,6 +684,10 @@ export class WebGPUPipeline {
     this.modPixelate = d.createShaderModule({ code: FRAG_PIXELATE });
     this.modQuantize = d.createShaderModule({ code: FRAG_QUANTIZE });
     this.modBayer = d.createShaderModule({ code: FRAG_BAYER });
+    this.modBlueNoise = d.createShaderModule({ code: FRAG_BLUENOISE });
+    this.modIGN = d.createShaderModule({ code: FRAG_IGN });
+    this.modHalftone = d.createShaderModule({ code: FRAG_HALFTONE });
+    this.modOverlay = d.createShaderModule({ code: FRAG_OVERLAY });
     this.modStipple = d.createShaderModule({ code: FRAG_STIPPLE });
     this.modCopy = d.createShaderModule({ code: FRAG_COPY });
     this.modVizFx = d.createShaderModule({ code: FRAG_VIZFX });
@@ -422,6 +695,15 @@ export class WebGPUPipeline {
     this.samplerLinear = d.createSampler({
       magFilter: "nearest",
       minFilter: "nearest",
+    });
+    // Linear sampler with repeat — used for the user-uploaded overlay texture so
+    // tile mode works without per-pixel fract math, and Cover/Fit get smooth
+    // resampling instead of nearest-neighbor stair-stepping.
+    this.samplerLinearFilter = d.createSampler({
+      magFilter: "linear",
+      minFilter: "linear",
+      addressModeU: "repeat",
+      addressModeV: "repeat",
     });
 
     this.pipelinePixelate = d.createRenderPipeline({
@@ -451,6 +733,50 @@ export class WebGPUPipeline {
       vertex: { module: this.modVert, entryPoint: "vs" },
       fragment: {
         module: this.modBayer,
+        entryPoint: "fs",
+        targets: [{ format: WORK_FORMAT }],
+      },
+      primitive: { topology: "triangle-list" },
+    });
+
+    this.pipelineBlueNoise = d.createRenderPipeline({
+      layout: "auto",
+      vertex: { module: this.modVert, entryPoint: "vs" },
+      fragment: {
+        module: this.modBlueNoise,
+        entryPoint: "fs",
+        targets: [{ format: WORK_FORMAT }],
+      },
+      primitive: { topology: "triangle-list" },
+    });
+
+    this.pipelineIGN = d.createRenderPipeline({
+      layout: "auto",
+      vertex: { module: this.modVert, entryPoint: "vs" },
+      fragment: {
+        module: this.modIGN,
+        entryPoint: "fs",
+        targets: [{ format: WORK_FORMAT }],
+      },
+      primitive: { topology: "triangle-list" },
+    });
+
+    this.pipelineHalftone = d.createRenderPipeline({
+      layout: "auto",
+      vertex: { module: this.modVert, entryPoint: "vs" },
+      fragment: {
+        module: this.modHalftone,
+        entryPoint: "fs",
+        targets: [{ format: WORK_FORMAT }],
+      },
+      primitive: { topology: "triangle-list" },
+    });
+
+    this.pipelineOverlay = d.createRenderPipeline({
+      layout: "auto",
+      vertex: { module: this.modVert, entryPoint: "vs" },
+      fragment: {
+        module: this.modOverlay,
         entryPoint: "fs",
         targets: [{ format: WORK_FORMAT }],
       },
@@ -511,6 +837,143 @@ export class WebGPUPipeline {
       },
       primitive: { topology: "triangle-list" },
     });
+
+    this.initBlueNoiseTexture();
+  }
+
+  // Generate a 64×64 blue-noise LUT once at GPU init using Mitchell's
+  // best-candidate algorithm. Toroidal distance keeps the pattern tileable.
+  // Cost is one-time (~30ms for 64²); LUT lives on the GPU for the rest of
+  // the session.
+  private initBlueNoiseTexture() {
+    const N = 64;
+    const total = N * N;
+    const ranks = new Float32Array(total);
+    const filled: number[] = [];
+    const filledSet = new Uint8Array(total);
+
+    const dist2 = (a: number, b: number) => {
+      let dx = (a % N) - (b % N);
+      let dy = ((a / N) | 0) - ((b / N) | 0);
+      // toroidal wrap so the LUT tiles cleanly
+      if (dx > N / 2) dx -= N;
+      else if (dx < -N / 2) dx += N;
+      if (dy > N / 2) dy -= N;
+      else if (dy < -N / 2) dy += N;
+      return dx * dx + dy * dy;
+    };
+
+    // Seed first point
+    const seed = Math.floor(Math.random() * total);
+    filled.push(seed);
+    filledSet[seed] = 1;
+    ranks[seed] = 0;
+
+    while (filled.length < total) {
+      // Mitchell: pick the candidate that maximises distance to the nearest
+      // already-placed point. More candidates = better quality, more cost;
+      // 16 is a good sweet spot for N=64.
+      const numCandidates = 16;
+      let bestIdx = -1;
+      let bestMinDist = -1;
+      for (let c = 0; c < numCandidates; c++) {
+        let cand = Math.floor(Math.random() * total);
+        // Skip occupied — at high fill ratio this can spin, so cap retries
+        let tries = 0;
+        while (filledSet[cand] && tries < 8) {
+          cand = Math.floor(Math.random() * total);
+          tries++;
+        }
+        if (filledSet[cand]) continue;
+        let minDist = Infinity;
+        // Subsample filled when it's huge — exact min isn't worth O(N²) per insert
+        const stride = filled.length > 256 ? Math.ceil(filled.length / 256) : 1;
+        for (let i = 0; i < filled.length; i += stride) {
+          const d = dist2(cand, filled[i]);
+          if (d < minDist) {
+            minDist = d;
+            if (minDist <= bestMinDist) break;
+          }
+        }
+        if (minDist > bestMinDist) {
+          bestMinDist = minDist;
+          bestIdx = cand;
+        }
+      }
+      if (bestIdx < 0) {
+        // Fallback: pick any unoccupied slot
+        for (let i = 0; i < total; i++) {
+          if (!filledSet[i]) {
+            bestIdx = i;
+            break;
+          }
+        }
+      }
+      ranks[bestIdx] = filled.length / total;
+      filledSet[bestIdx] = 1;
+      filled.push(bestIdx);
+    }
+
+    const data = new Uint8Array(total);
+    for (let i = 0; i < total; i++) {
+      data[i] = Math.min(255, Math.floor(ranks[i] * 256));
+    }
+
+    this.texBlueNoise = this.device.createTexture({
+      size: [N, N],
+      format: "r8unorm",
+      usage:
+        GPUTextureUsage.TEXTURE_BINDING |
+        GPUTextureUsage.COPY_DST,
+    });
+    this.device.queue.writeTexture(
+      { texture: this.texBlueNoise },
+      data,
+      { bytesPerRow: N },
+      [N, N]
+    );
+  }
+
+  /**
+   * Upload a user-supplied overlay texture. Idempotent: passing the same
+   * ImageBitmap twice in a row skips the upload. Pass `null` to clear.
+   */
+  setOverlayTexture(bitmap: ImageBitmap | null): void {
+    if (bitmap === null) {
+      this.texOverlay?.destroy();
+      this.texOverlay = null;
+      this.overlayWidth = 0;
+      this.overlayHeight = 0;
+      this.lastUploadedOverlay = null;
+      return;
+    }
+    if (this.lastUploadedOverlay === bitmap && this.texOverlay) return;
+
+    const w = bitmap.width;
+    const h = bitmap.height;
+    if (
+      this.texOverlay === null ||
+      this.overlayWidth !== w ||
+      this.overlayHeight !== h
+    ) {
+      this.texOverlay?.destroy();
+      this.texOverlay = this.device.createTexture({
+        size: [w, h],
+        format: WORK_FORMAT,
+        usage:
+          GPUTextureUsage.TEXTURE_BINDING |
+          GPUTextureUsage.COPY_DST |
+          GPUTextureUsage.RENDER_ATTACHMENT,
+      });
+      this.overlayWidth = w;
+      this.overlayHeight = h;
+    }
+    this.device.queue.copyExternalImageToTexture(
+      { source: bitmap },
+      { texture: this.texOverlay! },
+      [w, h]
+    );
+    this.lastUploadedOverlay = bitmap;
   }
 
   private getCanvasContext(canvas: HTMLCanvasElement): GPUCanvasContext {
@@ -604,6 +1067,7 @@ export class WebGPUPipeline {
     options?: {
       outCanvas?: HTMLCanvasElement;
       viz?: VizParams;
+      overlay?: OverlayParams;
       bitmapAlreadyOwned?: boolean;
     }
   ): Promise<GPUProcessResult> {
@@ -755,39 +1219,119 @@ export class WebGPUPipeline {
       }
     }
 
-    // ─── 3. BAYER DITHER (skip Floyd-Steinberg — handled by CPU path) ───
-    const isBayer = settings.dither === "bayer4" || settings.dither === "bayer8";
+    // ─── 3. GPU DITHER (Bayer / Blue noise / IGN / Halftone) ─────────────
+    // Floyd-Steinberg / Atkinson / JJN are sequential — handled on CPU.
+    const gpuDithers = new Set([
+      "bayer4",
+      "bayer8",
+      "bluenoise",
+      "ign",
+      "halftone",
+    ]);
+    const isGpuDither = gpuDithers.has(settings.dither);
     if (
-      isBayer &&
+      isGpuDither &&
       palette.colors.length > 0 &&
       settings.ditherAmount > 0 &&
       beforePaletteTex
     ) {
-      const matrixSize = settings.dither === "bayer4" ? 4 : 8;
+      // Build the right uniform + bind group for the chosen dither, using
+      // beforePaletteTex as input (each shader does its own bias-then-quantize).
+      let ditherPipeline: GPURenderPipeline;
+      let ditherBindGroup: GPUBindGroup;
 
-      // Layout: vec2 res (8 bytes) + count (4) + matrixSize (4) = 16 bytes header
-      const buf = new ArrayBuffer(16 + 32 * 16);
-      new Float32Array(buf, 0, 2).set([w, h]);
-      new Uint32Array(buf, 8, 2).set([palette.colors.length, matrixSize]);
-      const f32 = new Float32Array(buf, 16);
-      for (let i = 0; i < palette.colors.length && i < 32; i++) {
-        const c = palette.colors[i];
-        f32[i * 4] = c[0] / 255;
-        f32[i * 4 + 1] = c[1] / 255;
-        f32[i * 4 + 2] = c[2] / 255;
-        f32[i * 4 + 3] = 1;
+      const writePaletteVec4 = (target: ArrayBuffer, byteOffset: number) => {
+        const f = new Float32Array(target, byteOffset);
+        for (let i = 0; i < palette.colors.length && i < 32; i++) {
+          const c = palette.colors[i];
+          f[i * 4] = c[0] / 255;
+          f[i * 4 + 1] = c[1] / 255;
+          f[i * 4 + 2] = c[2] / 255;
+          f[i * 4 + 3] = 1;
+        }
+      };
+
+      if (settings.dither === "bayer4" || settings.dither === "bayer8") {
+        const matrixSize = settings.dither === "bayer4" ? 4 : 8;
+        const buf = new ArrayBuffer(16 + 32 * 16);
+        new Float32Array(buf, 0, 2).set([w, h]);
+        new Uint32Array(buf, 8, 2).set([palette.colors.length, matrixSize]);
+        writePaletteVec4(buf, 16);
+        this.device.queue.writeBuffer(this.bufBayer, 0, buf);
+
+        ditherPipeline = this.pipelineBayer;
+        ditherBindGroup = this.device.createBindGroup({
+          layout: this.pipelineBayer.getBindGroupLayout(0),
+          entries: [
+            { binding: 0, resource: this.samplerLinear },
+            { binding: 1, resource: beforePaletteTex.createView() },
+            { binding: 2, resource: { buffer: this.bufBayer } },
+          ],
+        });
+      } else if (settings.dither === "bluenoise") {
+        // Layout: vec2 res(8) + count(4) + strength(4) = 16 header + palette
+        const buf = new ArrayBuffer(16 + 32 * 16);
+        new Float32Array(buf, 0, 2).set([w, h]);
+        new Uint32Array(buf, 8, 1)[0] = palette.colors.length;
+        new Float32Array(buf, 12, 1)[0] = 0.4;
+        writePaletteVec4(buf, 16);
+        this.device.queue.writeBuffer(this.bufNoiseDither, 0, buf);
+
+        ditherPipeline = this.pipelineBlueNoise;
+        ditherBindGroup = this.device.createBindGroup({
+          layout: this.pipelineBlueNoise.getBindGroupLayout(0),
+          entries: [
+            { binding: 0, resource: this.samplerLinear },
+            { binding: 1, resource: beforePaletteTex.createView() },
+            { binding: 2, resource: this.texBlueNoise!.createView() },
+            { binding: 3, resource: { buffer: this.bufNoiseDither } },
+          ],
+        });
+      } else if (settings.dither === "ign") {
+        // Same uniform layout as bluenoise; different pipeline (no LUT binding)
+        const buf = new ArrayBuffer(16 + 32 * 16);
+        new Float32Array(buf, 0, 2).set([w, h]);
+        new Uint32Array(buf, 8, 1)[0] = palette.colors.length;
+        new Float32Array(buf, 12, 1)[0] = 0.35;
+        writePaletteVec4(buf, 16);
+        this.device.queue.writeBuffer(this.bufNoiseDither, 0, buf);
+
+        ditherPipeline = this.pipelineIGN;
+        ditherBindGroup = this.device.createBindGroup({
+          layout: this.pipelineIGN.getBindGroupLayout(0),
+          entries: [
+            { binding: 0, resource: this.samplerLinear },
+            { binding: 1, resource: beforePaletteTex.createView() },
+            { binding: 2, resource: { buffer: this.bufNoiseDither } },
+          ],
+        });
+      } else {
+        // halftone — cellSize tracks block size so the dot grid matches the
+        // pixelation feel; clamped to a visible minimum.
+        const cellSize = Math.max(4, settings.blockSize);
+        const buf = new ArrayBuffer(16 + 32 * 16);
+        new Float32Array(buf, 0, 2).set([w, h]);
+        new Uint32Array(buf, 8, 2).set([palette.colors.length, cellSize]);
+        writePaletteVec4(buf, 16);
+        this.device.queue.writeBuffer(this.bufHalftone, 0, buf);
+
+        ditherPipeline = this.pipelineHalftone;
+        ditherBindGroup = this.device.createBindGroup({
+          layout: this.pipelineHalftone.getBindGroupLayout(0),
+          entries: [
+            { binding: 0, resource: this.samplerLinear },
+            { binding: 1, resource: beforePaletteTex.createView() },
+            { binding: 2, resource: { buffer: this.bufHalftone } },
+          ],
+        });
       }
-      this.device.queue.writeBuffer(this.bufBayer, 0, buf);
 
-      const bg = this.device.createBindGroup({
-        layout: this.pipelineBayer.getBindGroupLayout(0),
-        entries: [
-          { binding: 0, resource: this.samplerLinear },
-          { binding: 1, resource: beforePaletteTex.createView() },
-          { binding: 2, resource: { buffer: this.bufBayer } },
-        ],
-      });
-      this.renderPass(encoder, nextTex.createView(), this.pipelineBayer, bg);
+      this.renderPass(
+        encoder,
+        nextTex.createView(),
+        ditherPipeline,
+        ditherBindGroup
+      );
       const ditheredTex = nextTex;
       swap();
 
@@ -853,7 +1397,45 @@ export class WebGPUPipeline {
       }
     }
 
-    // ─── 4. PRESENT to canvas (with optional viz post-FX) ────────────────
+    // ─── 4. TEXTURE OVERLAY ──────────────────────────────────────────────
+    // User-uploaded image composited via Photoshop-style blend modes. Skipped
+    // entirely when no overlay is bound or opacity is 0.
+    const overlayOpts = options?.overlay;
+    if (overlayOpts && this.texOverlay && overlayOpts.opacity > 0) {
+      const buf = new ArrayBuffer(32);
+      new Float32Array(buf, 0, 4).set([
+        w,
+        h,
+        this.overlayWidth,
+        this.overlayHeight,
+      ]);
+      new Uint32Array(buf, 16, 2).set([
+        overlayOpts.blendMode,
+        overlayOpts.fitMode,
+      ]);
+      new Float32Array(buf, 24, 1)[0] = overlayOpts.opacity;
+      // pad bytes left as 0
+      this.device.queue.writeBuffer(this.bufOverlay, 0, buf);
+
+      const overlayBg = this.device.createBindGroup({
+        layout: this.pipelineOverlay.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: this.samplerLinearFilter },
+          { binding: 1, resource: currentTex.createView() },
+          { binding: 2, resource: this.texOverlay.createView() },
+          { binding: 3, resource: { buffer: this.bufOverlay } },
+        ],
+      });
+      this.renderPass(
+        encoder,
+        nextTex.createView(),
+        this.pipelineOverlay,
+        overlayBg
+      );
+      swap();
+    }
+
+    // ─── 5. PRESENT to canvas (with optional viz post-FX) ────────────────
     const targetTex = ctx.getCurrentTexture();
 
     const useViz = !!options?.viz && options.viz.mode !== 0;
@@ -955,6 +1537,40 @@ export type VizParams = {
   fft?: Float32Array;
 };
 
+export type OverlayBlendMode =
+  | "normal"
+  | "multiply"
+  | "screen"
+  | "overlay"
+  | "soft-light"
+  | "hard-light"
+  | "difference"
+  | "color-burn";
+
+export const OVERLAY_BLEND_BITS: Record<OverlayBlendMode, number> = {
+  normal: 0,
+  multiply: 1,
+  screen: 2,
+  overlay: 3,
+  "soft-light": 4,
+  "hard-light": 5,
+  difference: 6,
+  "color-burn": 7,
+};
+
+export type OverlayFitMode = "cover" | "tile" | "fit";
+export const OVERLAY_FIT_BITS: Record<OverlayFitMode, number> = {
+  cover: 0,
+  tile: 1,
+  fit: 2,
+};
+
+export type OverlayParams = {
+  blendMode: number;
+  fitMode: number;
+  opacity: number; // 0..1
+};
+
 // Singleton initialization — async, cached for app lifetime
 let pipelinePromise: Promise<WebGPUPipeline | null> | null = null;
 export function getWebGPU(): Promise<WebGPUPipeline | null> {
@@ -964,6 +1580,10 @@ export function getWebGPU(): Promise<WebGPUPipeline | null> {
 
 /** True iff this settings combo can be served by the GPU pipeline. */
 export function gpuCanHandle(settings: Settings): boolean {
-  // Floyd-Steinberg is sequential — keep it on CPU.
-  return settings.dither !== "floyd";
+  // Sequential error-diffusion dithers stay on CPU.
+  return (
+    settings.dither !== "floyd" &&
+    settings.dither !== "atkinson" &&
+    settings.dither !== "jarvis"
+  );
 }

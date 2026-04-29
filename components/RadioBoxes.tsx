@@ -8,15 +8,19 @@ type Props<V extends string> = {
   value: V;
   options: Option<V>[];
   onChange: (v: V) => void;
+  /** Grid column count. Defaults to 2. */
+  cols?: 2 | 3;
 };
 
 export function RadioBoxes<V extends string>({
   value,
   options,
   onChange,
+  cols = 2,
 }: Props<V>) {
+  const gridClass = cols === 3 ? "grid-cols-3" : "grid-cols-2";
   return (
-    <div className="grid grid-cols-2 gap-1">
+    <div className={`grid ${gridClass} gap-1`}>
       {options.map((opt) => {
         const selected = value === opt.value;
         return (
