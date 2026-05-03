@@ -1363,25 +1363,18 @@ export class WebGPUPipeline {
       const ditheredTex = nextTex;
       swap();
 
-      // Stipple blend (afterPalette, dithered, ditherAmount)
-      // currentTex was just updated to ditheredTex; we need to blend against the prior
-      // (afterPalette state). currentTex before the last swap was afterPalette.
-      // After swap, "currentTex" is ditheredTex. We need the previous afterPalette.
-      // Solution: route the dither result to texC, blend (currentBeforeBayer, texC).
-      // For simplicity we re-bind: afterPalette == "the pre-bayer current".
-      // We saved that as `beforePaletteTex` earlier... no, that's pre-palette.
-      // afterPalette ≡ the texture currentTex held when we entered this block.
-      // Since we've swapped once, let's track via a fresh variable.
-
-      // (Implementation: capture afterPalette before the swap above.)
-      // To keep this simple and correct, we accept full-strength bayer when
-      // ditherAmount === 1 (skip blend). Otherwise blend.
+      // Stipple blend (afterPalette, dithered, ditherAmount).
+      // We have 3 ping-pong slots (texA/B/C). After the dither pass, ditheredTex
+      // is one of them. We need to (a) re-render afterPalette into a *different*
+      // slot, then (b) stipple-blend the two into a *third* slot. Picking these
+      // dynamically avoids the bug where afterPaletteSlot collided with
+      // ditheredTex and silently zeroed out the dither effect at amount < 1.
       if (settings.ditherAmount < 1) {
-        // Render plain palette-quantized into a fresh slot for the blend.
-        // We need afterPalette (pre-bayer) as input A.
-        // Easiest way: re-run quantize from beforePaletteTex into texC,
-        // then stipple-blend (texC, ditheredTex, ditherAmount).
-        const afterPaletteSlot = this.texC!;
+        const allTex = [this.texA!, this.texB!, this.texC!];
+        const remaining = allTex.filter((t) => t !== ditheredTex);
+        const afterPaletteSlot = remaining[0];
+        const out = remaining[1];
+
         // Re-quantize beforePaletteTex into afterPaletteSlot
         const q2 = this.device.createBindGroup({
           layout: this.pipelineQuantize.getBindGroupLayout(0),
@@ -1404,8 +1397,6 @@ export class WebGPUPipeline {
           new Float32Array([w, h, settings.ditherAmount, 0]).buffer
         );
 
-        // Output goes to whichever isn't currently in use as input (ditheredTex or afterPaletteSlot)
-        const out = nextTex === afterPaletteSlot ? this.texA! : nextTex;
         const stippleBg = this.device.createBindGroup({
           layout: this.pipelineStipple.getBindGroupLayout(0),
           entries: [
@@ -1422,6 +1413,7 @@ export class WebGPUPipeline {
           stippleBg
         );
         currentTex = out;
+        nextTex = ditheredTex;
       }
     }
 
