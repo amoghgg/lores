@@ -1263,6 +1263,13 @@ export class WebGPUPipeline {
       settings.ditherAmount > 0 &&
       beforePaletteTex
     ) {
+      // Snapshot afterPalette BEFORE the dither pass. The dither writes into
+      // nextTex, which is by definition different from currentTex, so this
+      // reference stays valid through the pass and we can stipple-blend
+      // against it directly without a re-quantize round-trip (which used to
+      // collide with beforePaletteTex when pixelate had run).
+      const afterPaletteTex = currentTex;
+
       // Build the right uniform + bind group for the chosen dither, using
       // beforePaletteTex as input (each shader does its own bias-then-quantize).
       let ditherPipeline: GPURenderPipeline;
@@ -1363,33 +1370,15 @@ export class WebGPUPipeline {
       const ditheredTex = nextTex;
       swap();
 
-      // Stipple blend (afterPalette, dithered, ditherAmount).
-      // We have 3 ping-pong slots (texA/B/C). After the dither pass, ditheredTex
-      // is one of them. We need to (a) re-render afterPalette into a *different*
-      // slot, then (b) stipple-blend the two into a *third* slot. Picking these
-      // dynamically avoids the bug where afterPaletteSlot collided with
-      // ditheredTex and silently zeroed out the dither effect at amount < 1.
+      // Stipple blend (afterPalette, dithered, ditherAmount). We saved
+      // afterPaletteTex above; pick an output slot that's neither it nor
+      // ditheredTex, so the render-pass inputs and target are all distinct
+      // (3 slots, 2 inputs, 1 output — always fits).
       if (settings.ditherAmount < 1) {
         const allTex = [this.texA!, this.texB!, this.texC!];
-        const remaining = allTex.filter((t) => t !== ditheredTex);
-        const afterPaletteSlot = remaining[0];
-        const out = remaining[1];
-
-        // Re-quantize beforePaletteTex into afterPaletteSlot
-        const q2 = this.device.createBindGroup({
-          layout: this.pipelineQuantize.getBindGroupLayout(0),
-          entries: [
-            { binding: 0, resource: this.samplerLinear },
-            { binding: 1, resource: beforePaletteTex.createView() },
-            { binding: 2, resource: { buffer: this.bufQuantize } },
-          ],
-        });
-        this.renderPass(
-          encoder,
-          afterPaletteSlot.createView(),
-          this.pipelineQuantize,
-          q2
-        );
+        const out = allTex.find(
+          (t) => t !== afterPaletteTex && t !== ditheredTex
+        )!;
 
         this.device.queue.writeBuffer(
           this.bufStipple,
@@ -1401,7 +1390,7 @@ export class WebGPUPipeline {
           layout: this.pipelineStipple.getBindGroupLayout(0),
           entries: [
             { binding: 0, resource: this.samplerLinear },
-            { binding: 1, resource: afterPaletteSlot.createView() },
+            { binding: 1, resource: afterPaletteTex.createView() },
             { binding: 2, resource: ditheredTex.createView() },
             { binding: 3, resource: { buffer: this.bufStipple } },
           ],
