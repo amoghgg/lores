@@ -61,7 +61,7 @@ export function TextureSection({
   const badge = texture ? "LOADED" : "EMPTY";
 
   return (
-    <Section index="05" title="TEXTURE" badge={badge}>
+    <Section index="06" title="TEXTURE" badge={badge}>
       <div className="space-y-3">
         <input
           ref={inputRef}

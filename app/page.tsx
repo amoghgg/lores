@@ -24,6 +24,10 @@ import {
   type TextureMeta,
 } from "@/components/TextureSection";
 
+import { FilmSection } from "@/components/FilmSection";
+import { FILM_STOCKS, FILM_CATEGORIES } from "@/lib/filmStocks";
+import { DEFAULT_CONTROLS, type FilmControls } from "@/lib/film";
+
 import {
   processBest,
   upscaleNN,
@@ -32,6 +36,7 @@ import {
   type DitherMode,
   type Settings,
   type OverlayInput,
+  type FilmInput,
 } from "@/lib/pipeline";
 import { getPalette, PALETTES } from "@/lib/palettes";
 import { getAudio } from "@/lib/audio";
@@ -41,7 +46,7 @@ import {
   OVERLAY_FIT_BITS,
 } from "@/lib/gpu/webgpu";
 
-const BUILD_DATE = "2026.04.27";
+const BUILD_DATE = "2026.10.01";
 
 type SourceState = {
   image: ImageBitmap;
@@ -156,6 +161,39 @@ export default function Page() {
     [texture]
   );
 
+  // ─── Film state ──────────────────────────────────────────────────────
+  const [filmId, setFilmId] = useState<string>("none");
+  const [filmCategory, setFilmCategory] = useState<string>(
+    FILM_CATEGORIES[0].id
+  );
+  const [filmControls, setFilmControls] =
+    useState<FilmControls>(DEFAULT_CONTROLS);
+  // First stock pick while the pixel stages are still at their factory
+  // defaults switches to photo mode — nobody wants Portra over Game Boy green
+  // by accident. After that, the user's pixel settings are left alone.
+  const filmTouchedRef = useRef(false);
+
+  const filmInput: FilmInput | null = useMemo(() => {
+    const stock = FILM_STOCKS.find((s) => s.id === filmId);
+    if (!stock) return null;
+    return { recipe: stock.recipe, controls: filmControls };
+  }, [filmId, filmControls]);
+
+  const photoMode = () =>
+    setSettings((s) => ({ ...s, blockSize: 1, paletteId: "none", dither: "none" }));
+
+  const onFilmStock = (id: string) => {
+    if (id !== "none" && !filmTouchedRef.current) {
+      filmTouchedRef.current = true;
+      setSettings((s) =>
+        s.blockSize === 8 && s.paletteId === "gb" && s.dither === "none"
+          ? { ...s, blockSize: 1, paletteId: "none" }
+          : s
+      );
+    }
+    setFilmId(id);
+  };
+
   // ─── Visualize state ─────────────────────────────────────────────────
   const [vizMode, setVizMode] = useState<VizMode>("off");
   const [vizIntensity, setVizIntensity] = useState<number>(100);
@@ -189,6 +227,8 @@ export default function Page() {
   bassBumpRef.current = bassBump;
   const overlayRef = useRef(overlayInput);
   overlayRef.current = overlayInput;
+  const filmRef = useRef(filmInput);
+  filmRef.current = filmInput;
 
   // ─── Static processing path ──────────────────────────────────────────
   const debounceRef = useRef<number | null>(null);
@@ -202,7 +242,12 @@ export default function Page() {
     setProcessing(true);
     debounceRef.current = window.setTimeout(async () => {
       try {
-        const result = await processBest(source.image, settings, overlayInput);
+        const result = await processBest(
+          source.image,
+          settings,
+          overlayInput,
+          filmInput
+        );
         if (!cancelled) setOutput(result);
       } catch (err) {
         console.error(err);
@@ -214,7 +259,7 @@ export default function Page() {
       cancelled = true;
       if (debounceRef.current) window.clearTimeout(debounceRef.current);
     };
-  }, [source, settings, live, overlayInput]);
+  }, [source, settings, live, overlayInput, filmInput]);
 
   // ─── Live audio-reactive render loop ─────────────────────────────────
   // Deps intentionally just [live, source]. Settings/mode/intensity flow in
@@ -312,6 +357,9 @@ export default function Page() {
                   opacity: ov.opacity,
                 }
               : undefined,
+            film: filmRef.current
+              ? { ...filmRef.current, time: frame.time }
+              : null,
             bitmapAlreadyOwned: true,
           });
           // Throttle status-bar updates to 1 Hz so we don't trigger React
@@ -389,7 +437,7 @@ export default function Page() {
       const palette = getPalette(settings.paletteId);
       const tag = `${palette.id}-${settings.blockSize}px${
         settings.dither !== "none" ? `-${settings.dither}` : ""
-      }${outScale > 1 ? `-x${outScale}` : ""}`;
+      }${filmInput ? `-${filmId}` : ""}${outScale > 1 ? `-x${outScale}` : ""}`;
       downloadPNG(upscaled, `${base}-${tag}.png`);
     } finally {
       // toBlob is async under the hood but the user-visible work is done once
@@ -478,7 +526,7 @@ export default function Page() {
               account. Your image and audio never leave this tab.
             </p>
             <div className="mt-4 flex items-center justify-between">
-              <span className="text-ink-600">v0.3.0</span>
+              <span className="text-ink-600">v0.4.0</span>
               <span className="text-ink-600">MIT</span>
             </div>
           </div>
@@ -566,6 +614,19 @@ export default function Page() {
             )}
           </Section>
 
+          <FilmSection
+            stockId={filmId}
+            category={filmCategory}
+            controls={filmControls}
+            pixelActive={settings.blockSize > 1 || settings.paletteId !== "none"}
+            onStock={onFilmStock}
+            onCategory={setFilmCategory}
+            onControls={(patch) =>
+              setFilmControls((c) => ({ ...c, ...patch }))
+            }
+            onPhotoMode={photoMode}
+          />
+
           <TextureSection
             texture={textureMeta}
             blend={textureBlend}
@@ -587,7 +648,7 @@ export default function Page() {
             onBassBumpChange={setBassBump}
           />
 
-          <Section index="07" title="EXPORT" badge={`${outScale}× SCALE`}>
+          <Section index="08" title="EXPORT" badge={`${outScale}× SCALE`}>
             <RadioBoxes<string>
               value={String(outScale)}
               onChange={(v) => setOutScale(Number(v))}

@@ -1,5 +1,11 @@
 import { getPalette } from "../palettes";
 import { effectiveBlockSize, type Settings } from "../pipeline";
+import {
+  packFilmUniform,
+  FILM_UNIFORM_BYTES,
+  type FilmRecipe,
+  type FilmControls,
+} from "../film";
 
 // ───────────────────────────────────────────────────────────────────────────
 // WGSL shader sources
@@ -383,6 +389,489 @@ fn fs(@location(0) uv: vec2f) -> @location(0) vec4f {
 }
 `;
 
+// Film emulation — mirrors applyFilmCPU / gradePixel in lib/film.ts.
+// Order: frame remap → CA + corner softness → halation taps → grade (with
+// flash) → hand-tint → autochrome → vignette → leak → date stamp → frame
+// surround → grain → dust → amount mix.
+const FRAG_FILM = /* wgsl */ `
+struct Film {
+  head: vec4f,        // res.xy, seed, amount
+  mixR: vec4f, mixG: vec4f, mixB: vec4f,
+  wb: vec4f,          // rgb, exposure stops
+  curve: vec4f,       // contrast, shoulder, sat, balance
+  gamma: vec4f,
+  lift: vec4f,        // rgb, toneMix
+  gain: vec4f,
+  hue: array<vec4f, 3>,   // 12 bands, 30° apart
+  sat: array<vec4f, 3>,
+  lum: array<vec4f, 3>,
+  shadowTint: vec4f,  // rgb, amount
+  highTint: vec4f,
+  tone0: vec4f, tone1: vec4f, tone2: vec4f,
+  glowColor: vec4f,   // rgb, strength
+  glowP: vec4f,       // threshold, radius, soft, ca
+  grain: vec4f,       // amount, size, chroma, time
+  vig: vec4f,         // amount, falloff
+  vigColor: vec4f,
+  leak: vec4f,        // amount, angle
+  leakColor: vec4f,
+  fx: vec4f,          // dust, scratches, border kind
+  paper: vec4f,
+  fx2: vec4f,         // flash, mosaic, handTint, dateStamp
+};
+
+@group(0) @binding(0) var samp: sampler;
+@group(0) @binding(1) var src: texture_2d<f32>;
+@group(0) @binding(2) var<uniform> F: Film;
+
+const LUMA = vec3f(0.2126, 0.7152, 0.0722);
+const GOLDEN = 2.39996323;
+
+fn hash2(x: i32, y: i32, s: i32) -> f32 {
+  var h: u32 = (bitcast<u32>(x) * 0x8da6b343u) ^ (bitcast<u32>(y) * 0xd8163841u) ^ (bitcast<u32>(s) * 0xcb1ab31fu);
+  h = (h ^ (h >> 15u)) * 0x2c1b3c6du;
+  h = (h ^ (h >> 12u)) * 0x297a2d39u;
+  h = h ^ (h >> 15u);
+  return f32(h) / 4294967296.0;
+}
+
+fn vnoise(p: vec2f, s: i32) -> f32 {
+  let i = vec2i(floor(p));
+  let f = p - floor(p);
+  let u = f * f * (3.0 - 2.0 * f);
+  let a = hash2(i.x, i.y, s);
+  let b = hash2(i.x + 1, i.y, s);
+  let c = hash2(i.x, i.y + 1, s);
+  let d = hash2(i.x + 1, i.y + 1, s);
+  return a + (b - a) * u.x + (c - a) * u.y + (a - b - c + d) * u.x * u.y - 0.5;
+}
+
+fn at12(b: array<vec4f, 3>, i: u32) -> f32 {
+  let v = b[i / 4u];
+  let c = i % 4u;
+  if (c == 0u) { return v.x; }
+  if (c == 1u) { return v.y; }
+  if (c == 2u) { return v.z; }
+  return v.w;
+}
+
+fn band(b: array<vec4f, 3>, h: f32) -> f32 {
+  let x = h * 12.0;
+  let i0 = u32(floor(x)) % 12u;
+  let i1 = (i0 + 1u) % 12u;
+  let t = x - floor(x);
+  return at12(b, i0) * (1.0 - t) + at12(b, i1) * t;
+}
+
+// Hue shifts (in turns) interpolate along the shortest arc.
+fn hueBand(b: array<vec4f, 3>, h: f32) -> f32 {
+  let x = h * 12.0;
+  let i0 = u32(floor(x)) % 12u;
+  let i1 = (i0 + 1u) % 12u;
+  let t = x - floor(x);
+  let a = at12(b, i0);
+  var d = at12(b, i1) - a;
+  d = d - round(d);
+  return a + d * t;
+}
+
+fn rgb2hsv(c: vec3f) -> vec3f {
+  let mx = max(c.r, max(c.g, c.b));
+  let mn = min(c.r, min(c.g, c.b));
+  let d = mx - mn;
+  var h = 0.0;
+  if (d > 1e-6) {
+    if (mx == c.r) { h = (c.g - c.b) / d; }
+    else if (mx == c.g) { h = (c.b - c.r) / d + 2.0; }
+    else { h = (c.r - c.g) / d + 4.0; }
+    if (h < 0.0) { h = h + 6.0; }
+    h = h / 6.0;
+  }
+  var s = 0.0;
+  if (mx > 1e-6) { s = d / mx; }
+  return vec3f(fract(h), s, mx);
+}
+
+fn hsv2rgb(c: vec3f) -> vec3f {
+  let k = (vec3f(5.0, 3.0, 1.0) + c.x * 6.0) % vec3f(6.0);
+  return c.z - c.z * c.y * clamp(min(k, 4.0 - k), vec3f(0.0), vec3f(1.0));
+}
+
+fn curve1(v0: f32, gamma: f32, lift: f32, gain: f32) -> f32 {
+  var v = clamp(v0, 0.0, 1.0);
+  let s = v * v * (3.0 - 2.0 * v);
+  v = v + F.curve.x * (s - v);
+  let sh = F.curve.y;
+  if (sh > 0.0) { v = (v * (1.0 + sh)) / (1.0 + sh * v); }
+  v = pow(clamp(v, 0.0, 1.0), 1.0 / gamma);
+  return lift + v * (gain - lift);
+}
+
+fn grade(cin: vec3f, glow: vec3f, expGain: f32) -> vec3f {
+  var c = vec3f(dot(F.mixR.xyz, cin), dot(F.mixG.xyz, cin), dot(F.mixB.xyz, cin));
+  c = clamp(c * F.wb.xyz * exp2(F.wb.w) * expGain + glow, vec3f(0.0), vec3f(1.0));
+
+  let hsv = rgb2hsv(c);
+  let nh = fract(hsv.x + hueBand(F.hue, hsv.x));
+  let ns = clamp(hsv.y * band(F.sat, hsv.x) * F.curve.z, 0.0, 1.0);
+  let nv = hsv.z * (1.0 + (band(F.lum, hsv.x) - 1.0) * hsv.y);
+  c = hsv2rgb(vec3f(nh, ns, nv));
+
+  c = vec3f(
+    curve1(c.r, F.gamma.x, F.lift.x, F.gain.x),
+    curve1(c.g, F.gamma.y, F.lift.y, F.gain.y),
+    curve1(c.b, F.gamma.z, F.lift.z, F.gain.z)
+  );
+
+  let l = dot(c, LUMA);
+  let ws = 1.0 - smoothstep(0.0, 0.55 + F.curve.w, l);
+  let wh = smoothstep(0.45 + F.curve.w, 1.0, l);
+  let st = F.shadowTint.xyz - dot(F.shadowTint.xyz, LUMA);
+  let ht = F.highTint.xyz - dot(F.highTint.xyz, LUMA);
+  c = c + st * F.shadowTint.w * ws + ht * F.highTint.w * wh;
+
+  let tm = F.lift.w;
+  if (tm > 0.0) {
+    let l2 = clamp(dot(c, LUMA), 0.0, 1.0);
+    var g: vec3f;
+    if (l2 < 0.5) { g = mix(F.tone0.xyz, F.tone1.xyz, l2 * 2.0); }
+    else { g = mix(F.tone1.xyz, F.tone2.xyz, (l2 - 0.5) * 2.0); }
+    c = mix(c, g, tm);
+  }
+  return clamp(c, vec3f(0.0), vec3f(1.0));
+}
+
+fn frameRect(kind: u32, res: vec2f) -> vec4f {
+  let s = min(res.x, res.y);
+  switch (kind) {
+    case 1u: { return vec4f(s * 0.055, s * 0.06, res.x - s * 0.055, res.y - s * 0.235); }
+    case 4u: { return vec4f(s * 0.07, s * 0.085, res.x - s * 0.07, res.y - s * 0.21); }
+    case 2u: { return vec4f(s * 0.045, s * 0.045, res.x - s * 0.045, res.y - s * 0.045); }
+    case 3u: { return vec4f(s * 0.035, s * 0.035, res.x - s * 0.035, res.y - s * 0.035); }
+    case 6u: { return vec4f(s * 0.065, s * 0.065, res.x - s * 0.065, res.y - s * 0.065); }
+    case 7u: { return vec4f(s * 0.05, s * 0.05, res.x - s * 0.05, res.y - s * 0.05); }
+    case 5u: {
+      var ih = res.y * 0.86;
+      var iw = ih * 1.36;
+      if (iw > res.x * 0.9) { iw = res.x * 0.9; ih = iw / 1.36; }
+      return vec4f((res.x - iw) * 0.5, (res.y - ih) * 0.5, (res.x + iw) * 0.5, (res.y + ih) * 0.5);
+    }
+    case 8u: { return vec4f(s * 0.1, s * 0.08, res.x - s * 0.1, res.y - s * 0.08); }
+    case 9u: {
+      let ih = min(res.y, res.x / 2.39);
+      return vec4f(0.0, (res.y - ih) * 0.5, res.x, (res.y + ih) * 0.5);
+    }
+    default: { return vec4f(0.0, 0.0, res.x, res.y); }
+  }
+}
+
+fn frameSDF(kind: u32, fr: vec4f, p: vec2f, s: f32, seed: i32) -> f32 {
+  if (kind == 0u) { return -1e4; }
+  let c = (fr.xy + fr.zw) * 0.5;
+  if (kind == 8u) {
+    let ax = (fr.z - fr.x) * 0.5;
+    let ay = (fr.w - fr.y) * 0.5;
+    let k = length(vec2f((p.x - c.x) / ax, (p.y - c.y) / ay));
+    return (k - 1.0) * min(ax, ay);
+  }
+  var corner = array<f32, 10>(0.0, 0.004, 0.012, 0.02, 0.004, 0.0, 0.004, 0.01, 0.0, 0.0);
+  var rr = corner[kind] * s;
+  if (kind == 5u) { rr = (fr.w - fr.y) * 0.07; }
+  let hsz = (fr.zw - fr.xy) * 0.5 - vec2f(rr);
+  let q = abs(p - c) - hsz;
+  var d = length(max(q, vec2f(0.0))) + min(max(q.x, q.y), 0.0) - rr;
+  if (kind == 3u) {
+    d = d + vnoise(p / (s * 0.01), seed + 77) * s * 0.012;
+  } else if (kind == 6u) {
+    var along = p.x;
+    if (q.x > q.y) { along = p.y; }
+    d = d + sin(along / (s * 0.022) * 6.2831853) * s * 0.006;
+  } else if (kind == 7u) {
+    d = d + vnoise(p / (s * 0.06), seed + 78) * s * 0.06
+          + vnoise(vec2f(p.x / (s * 0.006), p.y / (s * 0.03)), seed + 79) * s * 0.01;
+  }
+  return d;
+}
+
+fn surround(kind: u32, sdf: f32, p: vec2f, h: f32, s: f32, seed: i32) -> vec3f {
+  let paper = F.paper.xyz;
+  let pn = vnoise(p / 3.0, seed + 91) * 0.04;
+  if (kind == 8u) {
+    let sheen = 0.75 + 0.35 * sin(p.y / h * 3.14159265 * 3.0 + 0.6);
+    let bevel = exp(-sdf / (s * 0.006)) * 0.35;
+    return paper * sheen + vec3f(bevel, bevel * 0.85, bevel * 0.5) + vec3f(pn);
+  }
+  if (kind == 7u) {
+    let k = exp(-sdf / (s * 0.02));
+    let streak = 0.75 + 0.5 * vnoise(vec2f(p.x / (s * 0.003), p.y / (s * 0.04)), seed + 80);
+    return paper * k * streak + vec3f(0.04, 0.035, 0.03);
+  }
+  return paper + vec3f(pn);
+}
+
+fn tarnish(c: vec3f, sdf: f32, s: f32, p: vec2f, seed: i32) -> vec3f {
+  let t = clamp(-sdf / (s * 0.1), 0.0, 1.0);
+  if (t >= 1.0) { return c; }
+  let n = vnoise(p / (s * 0.05), seed + 61) + 0.5;
+  let tt = clamp(t + (n - 0.5) * 0.3, 0.0, 1.0);
+  var col: vec3f;
+  if (tt < 0.5) { col = mix(vec3f(0.180, 0.361, 0.612), vec3f(0.541, 0.227, 0.478), tt * 2.0); }
+  else { col = mix(vec3f(0.541, 0.227, 0.478), vec3f(0.788, 0.635, 0.271), (tt - 0.5) * 2.0); }
+  return mix(c, col, (1.0 - tt) * 0.45 * n);
+}
+
+// Returns (dye rgb, lampblack edge factor).
+fn autochrome(p: vec2f, s: f32, seed: i32) -> vec4f {
+  let cell = max(2.2, s / 600.0);
+  let g = vec2i(floor(p / cell));
+  var d1 = 1e9;
+  var d2 = 1e9;
+  var best = g;
+  for (var oy = -1; oy <= 1; oy = oy + 1) {
+    for (var ox = -1; ox <= 1; ox = ox + 1) {
+      let cc = g + vec2i(ox, oy);
+      let fp = (vec2f(cc) + vec2f(hash2(cc.x, cc.y, seed + 31), hash2(cc.x, cc.y, seed + 32))) * cell;
+      let d = length(p - fp);
+      if (d < d1) { d2 = d1; d1 = d; best = cc; }
+      else if (d < d2) { d2 = d; }
+    }
+  }
+  let bias = vnoise(vec2f(best) / 5.0, seed + 33) * 0.5;
+  let idx = u32(floor(clamp(hash2(best.x, best.y, seed + 34) + bias, 0.0, 1.0) * 2.999));
+  var dyes = array<vec3f, 3>(
+    vec3f(0.878, 0.400, 0.184),
+    vec3f(0.310, 0.604, 0.290),
+    vec3f(0.353, 0.310, 0.659)
+  );
+  return vec4f(dyes[idx], smoothstep(0.0, cell * 0.18, d2 - d1));
+}
+
+fn segDist(p: vec2f, a: vec2f, b: vec2f) -> f32 {
+  let pa = p - a;
+  let ba = b - a;
+  let t = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);
+  return length(pa - ba * t);
+}
+
+fn glyphDist(code: i32, p0: vec2f) -> f32 {
+  if (code == -1) { return 9.0; }
+  if (code == -2) { return segDist(p0, vec2f(0.5, 1.95), vec2f(0.4, 1.6)); }
+  var seg = array<u32, 10>(63u, 6u, 91u, 79u, 102u, 109u, 125u, 7u, 127u, 111u);
+  let m = seg[u32(code)];
+  let p = vec2f(p0.x - p0.y * 0.12, p0.y);
+  var d = 9.0;
+  if ((m & 1u) != 0u) { d = min(d, segDist(p, vec2f(0.15, 2.0), vec2f(0.85, 2.0))); }
+  if ((m & 2u) != 0u) { d = min(d, segDist(p, vec2f(0.9, 1.95), vec2f(0.9, 1.05))); }
+  if ((m & 4u) != 0u) { d = min(d, segDist(p, vec2f(0.9, 0.95), vec2f(0.9, 0.05))); }
+  if ((m & 8u) != 0u) { d = min(d, segDist(p, vec2f(0.15, 0.0), vec2f(0.85, 0.0))); }
+  if ((m & 16u) != 0u) { d = min(d, segDist(p, vec2f(0.1, 0.95), vec2f(0.1, 0.05))); }
+  if ((m & 32u) != 0u) { d = min(d, segDist(p, vec2f(0.1, 1.95), vec2f(0.1, 1.05))); }
+  if ((m & 64u) != 0u) { d = min(d, segDist(p, vec2f(0.15, 1.0), vec2f(0.85, 1.0))); }
+  return d;
+}
+
+fn stampDigit(seed: i32, k: i32) -> i32 {
+  var years = array<i32, 9>(95, 96, 97, 98, 99, 0, 1, 2, 3);
+  let yy = years[u32(floor(hash2(seed, 1, 71) * 9.0)) % 9u];
+  let mm = 1 + i32(floor(hash2(seed, 2, 72) * 12.0));
+  let dd = 1 + i32(floor(hash2(seed, 3, 73) * 28.0));
+  switch (k) {
+    case 0: { return -2; }
+    case 1: { return yy / 10; }
+    case 2: { return yy % 10; }
+    case 4: { if (mm >= 10) { return 1; } return -1; }
+    case 5: { return mm % 10; }
+    case 7: { return dd / 10; }
+    case 8: { return dd % 10; }
+    default: { return -1; }
+  }
+}
+
+fn stampAt(fr: vec4f, p: vec2f, s: f32, seed: i32) -> vec2f {
+  let gh = s * 0.032;
+  let unit = gh * 0.5;
+  let adv = unit * 1.45;
+  let right = fr.z - (fr.z - fr.x) * 0.06;
+  let bottom = fr.w - (fr.w - fr.y) * 0.05;
+  let left = right - adv * 9.0;
+  if (p.x < left - gh || p.x > right + gh || p.y < bottom - gh * 2.0 || p.y > bottom + gh) {
+    return vec2f(0.0);
+  }
+  let i = i32(floor((p.x - left) / adv));
+  var d = 9.0;
+  for (var k = max(0, i - 1); k <= min(8, i + 1); k = k + 1) {
+    let g = vec2f((p.x - (left + f32(k) * adv)) / unit, (bottom - p.y) / unit);
+    d = min(d, glyphDist(stampDigit(seed, k), g));
+  }
+  return vec2f(1.0 - smoothstep(0.09, 0.17, d), exp(-d * d * 6.0) * 0.8);
+}
+
+@fragment
+fn fs(@location(0) uv: vec2f) -> @location(0) vec4f {
+  let res = F.head.xy;
+  let s = min(res.x, res.y);
+  let seed = i32(F.head.z);
+  let p = uv * res;
+  let orig = textureSampleLevel(src, samp, uv, 0.0);
+
+  let kind = u32(F.fx.z);
+  let fr = frameRect(kind, res);
+  let fsz = fr.zw - fr.xy;
+  let fc = (fr.xy + fr.zw) * 0.5;
+  let scale = max(fsz.x / res.x, fsz.y / res.y);
+  let suv = ((p - fc) / scale + res * 0.5) / res;
+
+  let u = (p - fc) / fsz;
+  let d = length(u) * 1.41421356;
+
+  var c = textureSampleLevel(src, samp, suv, 0.0).rgb;
+
+  let ca = F.glowP.w * s;
+  if (ca > 0.0) {
+    let dir = u / max(length(u), 1e-4);
+    let off = dir * ca * d * d / res;
+    c.r = textureSampleLevel(src, samp, suv + off, 0.0).r;
+    c.b = textureSampleLevel(src, samp, suv - off, 0.0).b;
+  }
+
+  let rot = hash2(i32(p.x), i32(p.y), seed + 5) * 6.2831853;
+
+  if (F.glowP.z > 0.0) {
+    let softR = F.glowP.z * s * d * d;
+    var acc = c;
+    for (var i = 0; i < 12; i = i + 1) {
+      let fi = f32(i) + 0.5;
+      let r = sqrt(fi / 12.0) * softR;
+      let a = fi * GOLDEN + rot;
+      acc = acc + textureSampleLevel(src, samp, suv + vec2f(cos(a), sin(a)) * r / res, 0.0).rgb;
+    }
+    c = acc / 13.0;
+  }
+
+  var glow = vec3f(0.0);
+  let gAmt = F.glowColor.w;
+  if (gAmt > 0.0) {
+    let R = F.glowP.y * s;
+    let thr = F.glowP.x;
+    var e = 0.0;
+    var wsum = 0.0;
+    for (var i = 0; i < 20; i = i + 1) {
+      let fi = f32(i) + 0.5;
+      let t = sqrt(fi / 20.0);
+      let a = fi * GOLDEN + rot;
+      let tap = textureSampleLevel(src, samp, suv + vec2f(cos(a), sin(a)) * t * R / res, 0.0).rgb;
+      let wgt = exp(-t * t * 2.5);
+      e = e + max(0.0, dot(tap, LUMA) - thr) * wgt;
+      wsum = wsum + wgt;
+    }
+    e = e / (wsum * max(0.05, 1.0 - thr));
+    glow = F.glowColor.xyz * e * gAmt * 1.6;
+  }
+
+  var flashG = 1.0;
+  if (F.fx2.x > 0.0) {
+    flashG = 1.0 + (mix(1.2, 0.5, smoothstep(0.05, 0.95, d)) - 1.0) * F.fx2.x;
+  }
+  c = grade(c, glow, flashG);
+
+  if (F.fx2.z > 0.0) {
+    // Hand-tint: wide blurred chroma bleeding past edges, gone in the shadows.
+    let R = s * 0.02;
+    var acc = vec3f(0.0);
+    for (var i = 0; i < 16; i = i + 1) {
+      let fi = f32(i) + 0.5;
+      let r = sqrt(fi / 16.0) * R;
+      let a = fi * GOLDEN + rot;
+      acc = acc + textureSampleLevel(src, samp, suv + vec2f(cos(a), sin(a)) * r / res, 0.0).rgb;
+    }
+    acc = acc / 16.0;
+    let k = F.fx2.z * 0.55 * smoothstep(0.18, 0.6, dot(c, LUMA));
+    c = c + (acc - dot(acc, LUMA)) * k;
+  }
+
+  if (F.fx2.y > 0.0) {
+    let ac = autochrome(p, s, seed);
+    let mean = (ac.r + ac.g + ac.b) / 3.0;
+    let lamp = 0.85 + 0.15 * ac.w;
+    c = c * (vec3f(1.0) + 0.18 * F.fx2.y * (ac.rgb / mean - vec3f(1.0))) * (1.0 + (lamp - 1.0) * F.fx2.y);
+  }
+
+  let vAmt = F.vig.x;
+  if (vAmt > 0.0) {
+    let v = clamp(vAmt * pow(d, 1.5 + F.vig.y * 3.0), 0.0, 1.0);
+    c = c * mix(vec3f(1.0), F.vigColor.xyz, v);
+  }
+
+  let lAmt = F.leak.x;
+  if (lAmt > 0.0) {
+    let e = u.x * cos(F.leak.y) + u.y * sin(F.leak.y) + vnoise(u * 2.2 + vec2f(F.head.z, 0.0), seed + 3) * 0.35;
+    let k = smoothstep(0.12, 0.62, e) * lAmt;
+    let hot = k * k * 0.6;
+    let lc = F.leakColor.xyz + (vec3f(1.0, 0.92, 0.7) - F.leakColor.xyz) * hot;
+    c = vec3f(1.0) - (vec3f(1.0) - c) * (vec3f(1.0) - lc * k);
+  }
+
+  if (F.fx2.w > 0.0) {
+    let st = stampAt(fr, p, s, seed);
+    let add = clamp(vec3f(1.0, 0.353, 0.071) * st.y + vec3f(1.0, 0.694, 0.290) * st.x, vec3f(0.0), vec3f(1.0));
+    c = vec3f(1.0) - (vec3f(1.0) - c) * (vec3f(1.0) - add);
+  }
+
+  let sdf = frameSDF(kind, fr, p, s, seed);
+  if (kind == 8u && sdf < 0.0) { c = tarnish(c, sdf, s, p, seed); }
+  var edgeSoft = 0.75;
+  if (kind == 5u) { edgeSoft = s * 0.004; }
+  let outside = smoothstep(-edgeSoft, edgeSoft, sdf);
+  if (outside > 0.0) {
+    c = mix(c, surround(kind, sdf, p, res.y, s, seed), outside);
+  }
+
+  let gr = F.grain.x;
+  if (gr > 0.0) {
+    // Grain size is specified at a 2048px long edge; scale with the image.
+    let gs = max(0.6, F.grain.y * max(res.x, res.y) / 2048.0);
+    // Live mode animates grain; a still (time = 0) stays fixed per seed.
+    let gseed = seed + i32(F.grain.w * 24.0) * 131;
+    let n = p / gs;
+    let mono = vnoise(n, gseed) * 0.7 + vnoise(n * 2.1, gseed + 1) * 0.3;
+    let chroma = vec3f(vnoise(n, gseed + 11), vnoise(n, gseed + 12), vnoise(n, gseed + 13));
+    let nz = mix(vec3f(mono), chroma, F.grain.z);
+    let l = dot(c, LUMA);
+    c = c + nz * (0.3 + 2.8 * l * (1.0 - l)) * gr * 0.32;
+  }
+
+  if (F.fx.x > 0.0 || F.fx.y > 0.0) {
+    c = c + (vec3f(1.0) - c) * dustAt(p, s, seed);
+  }
+
+  let outc = mix(orig.rgb, clamp(c, vec3f(0.0), vec3f(1.0)), F.head.w);
+  return vec4f(outc, orig.a);
+}
+
+fn dustAt(p: vec2f, s: f32, seed: i32) -> f32 {
+  var v = 0.0;
+  let dust = F.fx.x;
+  if (dust > 0.0) {
+    let cell = max(8.0, s / 28.0);
+    let ci = vec2i(floor(p / cell));
+    if (hash2(ci.x, ci.y, seed + 41) < dust * 0.22) {
+      let sp = (vec2f(ci) + vec2f(hash2(ci.x, ci.y, seed + 42), hash2(ci.x, ci.y, seed + 43))) * cell;
+      let rad = (0.6 + hash2(ci.x, ci.y, seed + 44) * 2.2) * max(1.0, s / 900.0);
+      v = max(v, (1.0 - smoothstep(rad * 0.5, rad, length(p - sp))) * 0.85);
+    }
+  }
+  let scr = F.fx.y;
+  if (scr > 0.0) {
+    let col = i32(floor(p.x / 2.0));
+    if (hash2(col, 0, seed + 51) < scr * 0.004) {
+      let along = vnoise(vec2f(0.0, p.y / (s * 0.08)), seed + col) + 0.5;
+      v = max(v, smoothstep(0.45, 0.8, along) * 0.45);
+    }
+  }
+  return v;
+}
+`;
+
 const FRAG_STIPPLE = /* wgsl */ `
 struct Params {
   resolution: vec2f,
@@ -562,9 +1051,11 @@ export class WebGPUPipeline {
   private modStipple!: GPUShaderModule;
   private modCopy!: GPUShaderModule;
   private modVizFx!: GPUShaderModule;
+  private modFilm!: GPUShaderModule;
 
   private samplerLinear!: GPUSampler;
   private samplerLinearFilter!: GPUSampler;
+  private samplerClamp!: GPUSampler;
 
   private pipelinePixelate!: GPURenderPipeline;
   private pipelineQuantize!: GPURenderPipeline;
@@ -578,6 +1069,8 @@ export class WebGPUPipeline {
   private pipelineCopyToWork!: GPURenderPipeline;
   private pipelineVizFx!: GPURenderPipeline;
   private pipelineVizFxToCanvas!: GPURenderPipeline;
+  private pipelineFilm!: GPURenderPipeline;
+  private bufFilm: GPUBuffer;
   private bufVizFx: GPUBuffer;
   private bufFFT: GPUBuffer;
   private configuredCanvases = new WeakMap<HTMLCanvasElement, GPUCanvasContext>();
@@ -670,6 +1163,11 @@ export class WebGPUPipeline {
       size: 32,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
+    // Film uniform: 33 vec4f — see `struct Film` in FRAG_FILM
+    this.bufFilm = device.createBuffer({
+      size: FILM_UNIFORM_BYTES,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
     // FFT uniform: 64 vec4f = 1024 bytes (256 frequency bins)
     this.bufFFT = device.createBuffer({
       size: 1024,
@@ -691,6 +1189,7 @@ export class WebGPUPipeline {
     this.modStipple = d.createShaderModule({ code: FRAG_STIPPLE });
     this.modCopy = d.createShaderModule({ code: FRAG_COPY });
     this.modVizFx = d.createShaderModule({ code: FRAG_VIZFX });
+    this.modFilm = d.createShaderModule({ code: FRAG_FILM });
 
     this.samplerLinear = d.createSampler({
       magFilter: "nearest",
@@ -704,6 +1203,24 @@ export class WebGPUPipeline {
       minFilter: "linear",
       addressModeU: "repeat",
       addressModeV: "repeat",
+    });
+
+    // Clamped linear sampler for the film pass: halation / softness taps
+    // must not wrap across the frame edge the way the repeat sampler would.
+    this.samplerClamp = d.createSampler({
+      magFilter: "linear",
+      minFilter: "linear",
+    });
+
+    this.pipelineFilm = d.createRenderPipeline({
+      layout: "auto",
+      vertex: { module: this.modVert, entryPoint: "vs" },
+      fragment: {
+        module: this.modFilm,
+        entryPoint: "fs",
+        targets: [{ format: WORK_FORMAT }],
+      },
+      primitive: { topology: "triangle-list" },
     });
 
     this.pipelinePixelate = d.createRenderPipeline({
@@ -1071,6 +1588,7 @@ export class WebGPUPipeline {
       outCanvas?: HTMLCanvasElement;
       viz?: VizParams;
       overlay?: OverlayParams;
+      film?: FilmParams | null;
       bitmapAlreadyOwned?: boolean;
       /**
        * If true, await `queue.onSubmittedWorkDone()` after submit so the canvas
@@ -1406,7 +1924,37 @@ export class WebGPUPipeline {
       }
     }
 
-    // ─── 4. TEXTURE OVERLAY ──────────────────────────────────────────────
+    // ─── 4. FILM ─────────────────────────────────────────────────────────
+    // Stock / camera / print emulation on top of the pixel-art result. With
+    // block size 1 and palette ORIGINAL this is a plain photo film look.
+    const film = options?.film;
+    if (film && film.controls.amount > 0) {
+      this.device.queue.writeBuffer(
+        this.bufFilm,
+        0,
+        packFilmUniform(film.recipe, film.controls, w, h, film.time ?? 0)
+      );
+      const filmBg = this.device.createBindGroup({
+        layout: this.pipelineFilm.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: this.samplerClamp },
+          { binding: 1, resource: currentTex.createView() },
+          { binding: 2, resource: { buffer: this.bufFilm } },
+        ],
+      });
+      // The dither stipple path can leave nextTex === a live input; pick a
+      // slot that's free.
+      const target = [this.texA!, this.texB!, this.texC!].find(
+        (t) => t !== currentTex
+      )!;
+      this.renderPass(encoder, target.createView(), this.pipelineFilm, filmBg);
+      nextTex = [this.texA!, this.texB!, this.texC!].find(
+        (t) => t !== target && t !== currentTex
+      )!;
+      currentTex = target;
+    }
+
+    // ─── 5. TEXTURE OVERLAY ──────────────────────────────────────────────
     // User-uploaded image composited via Photoshop-style blend modes. Skipped
     // entirely when no overlay is bound or opacity is 0.
     const overlayOpts = options?.overlay;
@@ -1626,6 +2174,13 @@ export const OVERLAY_FIT_BITS: Record<OverlayFitMode, number> = {
   cover: 0,
   tile: 1,
   fit: 2,
+};
+
+export type FilmParams = {
+  recipe: FilmRecipe;
+  controls: FilmControls;
+  /** Seconds; animates grain in the live loop. 0 for a stable still. */
+  time?: number;
 };
 
 export type OverlayParams = {

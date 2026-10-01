@@ -9,6 +9,7 @@ import {
 } from "./dither";
 import { getPalette } from "./palettes";
 import { stippleBlend } from "./blend";
+import { applyFilmCPU, type FilmRecipe, type FilmControls } from "./film";
 
 export type DitherMode =
   | "none"
@@ -45,6 +46,11 @@ export type OverlayInput = {
   opacity: number;
 };
 
+export type FilmInput = {
+  recipe: FilmRecipe;
+  controls: FilmControls;
+};
+
 export type ProcessResult = {
   canvas: HTMLCanvasElement;
   ms: number;
@@ -66,7 +72,8 @@ export function effectiveBlockSize(settings: Settings): number {
 export function process(
   source: HTMLImageElement | ImageBitmap,
   settings: Settings,
-  overlay?: OverlayInput | null
+  overlay?: OverlayInput | null,
+  film?: FilmInput | null
 ): ProcessResult {
   const t0 = performance.now();
 
@@ -130,7 +137,12 @@ export function process(
 
   ctx.putImageData(img, 0, 0);
 
-  // 4. Texture overlay — apply via Canvas 2D's globalCompositeOperation, which
+  // 4. Film — stock / camera / print emulation over the pixel-art result.
+  if (film && film.controls.amount > 0) {
+    applyFilmCPU(ctx, w, h, film.recipe, film.controls);
+  }
+
+  // 5. Texture overlay — apply via Canvas 2D's globalCompositeOperation, which
   // maps 1:1 to the Photoshop blend names exposed in the UI.
   if (overlay && overlay.opacity > 0) {
     applyOverlay(ctx, w, h, overlay);
@@ -207,7 +219,8 @@ export function upscaleNN(
 export async function processBest(
   source: HTMLImageElement | ImageBitmap,
   settings: Settings,
-  overlay?: OverlayInput | null
+  overlay?: OverlayInput | null,
+  film?: FilmInput | null
 ): Promise<ProcessResult & { engine: "gpu" | "cpu" }> {
   const { gpuCanHandle, getWebGPU } = await import("./gpu/webgpu");
   if (gpuCanHandle(settings)) {
@@ -229,6 +242,7 @@ export async function processBest(
                 opacity: overlay.opacity,
               }
             : undefined,
+          film,
           // Static path → texture readback to a real 2D canvas. Side-steps
           // every WebGPU compositor / first-frame timing issue, so what you
           // see in the preview is bit-exactly what gets exported.
@@ -240,7 +254,7 @@ export async function processBest(
       }
     }
   }
-  const r = process(source, settings, overlay);
+  const r = process(source, settings, overlay, film);
   return { ...r, engine: "cpu" };
 }
 
