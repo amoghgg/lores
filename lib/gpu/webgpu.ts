@@ -73,7 +73,7 @@ struct Palette {
 
 @fragment
 fn fs(@location(0) uv: vec2f) -> @location(0) vec4f {
-  let c = textureSample(src, samp, uv);
+  let c = textureSampleLevel(src, samp, uv, 0.0);
   var best: vec3f = pal.colors[0].rgb;
   var bestDist: f32 = 1e9;
   for (var i: u32 = 0u; i < 32u; i = i + 1u) {
@@ -133,7 +133,7 @@ fn fs(@location(0) uv: vec2f) -> @location(0) vec4f {
     let by = px.y % 8u;
     t = (BAYER8[by * 8u + bx] / 64.0) - 0.5;
   }
-  let c = textureSample(src, samp, uv);
+  let c = textureSampleLevel(src, samp, uv, 0.0);
   let biased = clamp(c.rgb + vec3f(t * 0.25), vec3f(0.0), vec3f(1.0));
 
   var best: vec3f = params.colors[0].rgb;
@@ -173,7 +173,7 @@ fn fs(@location(0) uv: vec2f) -> @location(0) vec4f {
   let px = vec2u(uv * params.resolution);
   let nuv = vec2i(i32(px.x % 64u), i32(px.y % 64u));
   let n = textureLoad(noise, nuv, 0).r - 0.5;
-  let c = textureSample(src, samp, uv);
+  let c = textureSampleLevel(src, samp, uv, 0.0);
   let biased = clamp(c.rgb + vec3f(n * params.strength), vec3f(0.0), vec3f(1.0));
 
   var best: vec3f = params.colors[0].rgb;
@@ -215,7 +215,7 @@ fn ign(p: vec2f) -> f32 {
 fn fs(@location(0) uv: vec2f) -> @location(0) vec4f {
   let px = uv * params.resolution;
   let n = ign(px) - 0.5;
-  let c = textureSample(src, samp, uv);
+  let c = textureSampleLevel(src, samp, uv, 0.0);
   let biased = clamp(c.rgb + vec3f(n * params.strength), vec3f(0.0), vec3f(1.0));
 
   var best: vec3f = params.colors[0].rgb;
@@ -315,7 +315,7 @@ fn softLight1(b: f32, s: f32) -> f32 {
 
 @fragment
 fn fs(@location(0) uv: vec2f) -> @location(0) vec4f {
-  let base = textureSample(src, samp, uv);
+  let base = textureSampleLevel(src, samp, uv, 0.0);
 
   var tUV: vec2f;
   var inBounds: bool = true;
@@ -340,7 +340,7 @@ fn fs(@location(0) uv: vec2f) -> @location(0) vec4f {
 
   if (!inBounds) { return base; }
 
-  let tex = textureSample(overlay, samp, tUV);
+  let tex = textureSampleLevel(overlay, samp, tUV, 0.0);
   let effOpacity = tex.a * p.opacity;
 
   let b = base.rgb;
@@ -413,9 +413,9 @@ fn fs(@location(0) uv: vec2f) -> @location(0) vec4f {
   let by = px.y % 8u;
   let threshold = BAYER8[by * 8u + bx] / 64.0;
   if (threshold < params.amount) {
-    return textureSample(texB, samp, uv);
+    return textureSampleLevel(texB, samp, uv, 0.0);
   }
-  return textureSample(texA, samp, uv);
+  return textureSampleLevel(texA, samp, uv, 0.0);
 }
 `;
 
@@ -425,7 +425,7 @@ const FRAG_COPY = /* wgsl */ `
 
 @fragment
 fn fs(@location(0) uv: vec2f) -> @location(0) vec4f {
-  return textureSample(src, samp, uv);
+  return textureSampleLevel(src, samp, uv, 0.0);
 }
 `;
 
@@ -492,12 +492,12 @@ fn fs(@location(0) uv: vec2f) -> @location(0) vec4f {
     // Chroma split: much wider R/B separation, plus subtle vertical shimmer
     let bOff = vec2f(p.bass * 0.05 * p.intensity, p.bass * 0.012 * p.intensity);
     let tOff = vec2f(-p.treble * 0.05 * p.intensity, -p.treble * 0.012 * p.intensity);
-    let r = textureSample(src, samp, sampleUV + bOff);
-    let g = textureSample(src, samp, sampleUV);
-    let b = textureSample(src, samp, sampleUV + tOff);
+    let r = textureSampleLevel(src, samp, sampleUV + bOff, 0.0);
+    let g = textureSampleLevel(src, samp, sampleUV, 0.0);
+    let b = textureSampleLevel(src, samp, sampleUV + tOff, 0.0);
     col = vec4f(r.r, g.g, b.b, g.a);
   } else {
-    col = textureSample(src, samp, sampleUV);
+    col = textureSampleLevel(src, samp, sampleUV, 0.0);
   }
 
   // Color shift: mid-frequency-driven hue rotation — dramatic
