@@ -80,6 +80,9 @@ function bitmapCanvas(b: ImageBitmap): HTMLCanvasElement {
   return c;
 }
 
+// Kept in capitals in saved filenames.
+const ACRONYMS = new Set(["CGA", "IGN", "NEG"]);
+
 const isPixelArt = (r: Recipe) => r.block > 1 || r.palette !== "none";
 
 export default function Page() {
@@ -473,7 +476,9 @@ export default function Page() {
       .map((w) =>
         w
           // Title-case plain words (PORTRA → Portra); keep acronyms (CGA, C64, PICO-8).
-          .replace(/(^|[\s])([A-Z])([A-Z]{3,})(?=$|[\s,])/g, (_, sp: string, a: string, b: string) => sp + a + b.toLowerCase())
+          .replace(/(^|[\s])([A-Z])([A-Z]{2,})(?=$|[\s,])/g, (m: string, sp: string, a: string, b: string) =>
+            ACRONYMS.has(a + b) ? m : sp + a + b.toLowerCase()
+          )
           .replace(/(\d+)PX\b/, "$1px")
       )
       .join(", ");
