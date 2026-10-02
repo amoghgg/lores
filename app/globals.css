@@ -1051,8 +1051,12 @@ input[type="range"],
   }
 }
 
-/* ─── Intro ─────────────────────────────────────────────────────────── */
-.intro {
+.bar-logo {
+  cursor: pointer;
+}
+
+/* ─── Home ──────────────────────────────────────────────────────────── */
+.home {
   position: fixed;
   inset: 0;
   z-index: 70;
@@ -1061,54 +1065,60 @@ input[type="range"],
   justify-content: center;
   background: rgb(var(--ink-100));
   overflow: hidden;
-  animation: introIn 0.3s ease-out both;
 }
-.intro-leave {
-  animation: introOut 0.38s ease-in both;
-}
-@keyframes introIn {
-  from { opacity: 0; }
-}
-@keyframes introOut {
-  to { opacity: 0; transform: scale(1.03); }
-}
-.intro-bg {
+.home-bg {
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
 }
-.intro-scrim {
+.home-scrim {
   position: absolute;
   inset: 0;
-  background:
-    radial-gradient(ellipse at center, rgb(var(--ink-100) / 0.55) 0%, rgb(var(--ink-100) / 0.9) 70%),
-    rgb(var(--ink-100) / 0.25);
+  pointer-events: none;
+  background: radial-gradient(ellipse 60% 55% at center, rgb(var(--ink-100) / 0.82) 0%, rgb(var(--ink-100) / 0.35) 75%, transparent 100%);
 }
-.intro-body {
+.home-body {
   position: relative;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 22px;
+  gap: 28px;
   padding: 24px;
-  text-align: center;
+  width: 100%;
+  max-width: 720px;
+  pointer-events: none;
 }
-.intro-mark {
-  --cell: clamp(7px, 2.4vw, 20px);
+.home-body > * {
+  pointer-events: auto;
+}
+.home-mark {
+  --cell: clamp(6px, 2.4vw, 26px);
   display: grid;
   grid-auto-rows: var(--cell);
   gap: calc(var(--cell) * 0.16);
+  cursor: pointer;
+  background: none;
+  padding: 8px;
 }
-.intro-px {
+.home-px {
   width: var(--cell);
   height: var(--cell);
-  background: rgb(var(--ink-900) / 0.05);
+  background: rgb(var(--lime) / calc(0.06 + var(--near, 0) * 0.35));
+  transform: translate(var(--push-x, 0), var(--push-y, 0));
+  transition: transform 0.25s cubic-bezier(0.2, 1.4, 0.4, 1), background 0.3s;
 }
-.intro-on {
+.home-on {
   background: rgb(var(--lime));
-  box-shadow: 0 0 calc(var(--cell) * 0.6) rgb(var(--lime) / 0.45);
-  animation: pixelIn 0.5s cubic-bezier(0.2, 1.4, 0.4, 1) both;
+  box-shadow: 0 0 calc(var(--cell) * 0.7) rgb(var(--lime) / 0.5);
+  transform: translate(var(--push-x, 0), var(--push-y, 0)) scale(calc(1 + var(--near, 0) * 0.18));
+  animation:
+    pixelIn 0.5s var(--d) cubic-bezier(0.2, 1.4, 0.4, 1) both,
+    twinkle var(--tw) calc(var(--d) + 900ms) ease-in-out infinite;
+}
+.home-scatter .home-px {
+  transform: translate(calc(var(--sx, 0) * 22vw), calc(var(--sy, 0) * 22vh)) rotate(calc(var(--sx, 0) * 180deg)) scale(0.6);
+  transition: transform 0.55s cubic-bezier(0.3, 0, 0.2, 1);
 }
 @keyframes pixelIn {
   0% {
@@ -1120,104 +1130,165 @@ input[type="range"],
   }
   100% {
     opacity: 1;
-    transform: none;
   }
 }
-.intro-tag {
-  font-size: 13px;
-  line-height: 1.6;
+@keyframes twinkle {
+  0%,
+  100% {
+    filter: brightness(1);
+  }
+  50% {
+    filter: brightness(0.62);
+  }
+}
+.home-tag {
+  font-size: clamp(15px, 2vw, 20px);
+  line-height: 1.4;
   color: rgb(var(--ink-900));
-  max-width: 52ch;
-  animation: introUp 0.5s 1.1s ease-out both;
+  text-align: center;
+  animation: homeUp 0.5s 0.9s ease-out both;
 }
-.intro-tag span {
-  font-size: 11px;
-  color: rgb(var(--ink-700));
-}
-.intro-steps {
+.home-cta {
   display: flex;
-  gap: 18px;
-  font-size: 10px;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-  color: rgb(var(--ink-800));
-  animation: introUp 0.5s 1.3s ease-out both;
+  gap: 12px;
+  width: 100%;
+  max-width: 520px;
+  animation: homeUp 0.5s 1.1s ease-out both;
 }
-.intro-steps b {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 18px;
-  height: 18px;
-  margin-right: 6px;
-  border: 1px solid rgb(var(--lime));
+.home-btn {
+  flex: 1;
+  height: 64px;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.2em;
+  color: rgb(var(--ink-900));
+  background: rgb(var(--ink-100) / 0.7);
+  border: 1.5px solid rgb(var(--ink-900) / 0.35);
+  backdrop-filter: blur(6px);
+  transition: transform 0.15s, border-color 0.15s, background 0.15s;
+}
+.home-btn:hover {
+  border-color: rgb(var(--lime));
   color: rgb(var(--lime));
-  font-weight: 500;
 }
-.intro-cta {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: 8px;
-  animation: introUp 0.5s 1.5s ease-out both;
+.home-btn:active {
+  transform: scale(0.97);
 }
-.intro-btn {
-  padding: 14px 22px;
+.home-btn-primary {
+  background: rgb(var(--fill));
+  color: rgb(var(--on-fill));
+  border-color: rgb(var(--fill));
 }
-@keyframes introUp {
+.home-btn-primary:hover {
+  background: rgb(var(--fill) / 0.88);
+  color: rgb(var(--on-fill));
+  border-color: rgb(var(--fill));
+}
+@keyframes homeUp {
   from {
     opacity: 0;
-    transform: translateY(8px);
+    transform: translateY(10px);
   }
 }
-@media (max-width: 480px) {
-  .intro-steps {
+@media (max-width: 520px) {
+  .home-cta {
     flex-direction: column;
-    gap: 8px;
-    align-items: flex-start;
-  }
-  .intro-cta {
-    flex-direction: column;
-    width: 100%;
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .intro,
-  .intro-on,
-  .intro-tag,
-  .intro-steps,
-  .intro-cta {
+  .home-on,
+  .home-tag,
+  .home-cta {
     animation: none;
   }
 }
-.bar-logo {
-  cursor: pointer;
+
+/* ─── Pixel wipe ───────────────────────────────────────────────────── */
+.pixelwipe {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  width: 100vw;
+  height: 100vh;
+  display: none;
+  pointer-events: none;
 }
 
-/* Sample lore + required credit */
-.intro-lore {
-  font-size: 11px;
-  line-height: 1.6;
-  color: rgb(var(--ink-800));
-  animation: introUp 0.5s 1.8s ease-out both;
+/* ─── Easter egg: who is this? ─────────────────────────────────────── */
+.egg {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  width: 26px;
+  height: 26px;
+  border: 1px solid rgb(var(--ink-500));
+  background: rgb(var(--ink-50) / 0.8);
+  font-size: 12px;
+  color: rgb(var(--ink-700));
+  opacity: 0.55;
+  transition: opacity 0.2s, color 0.2s, border-color 0.2s;
 }
-.intro-lore a,
-.panel-credit {
+.egg:hover,
+.egg[aria-expanded="true"] {
+  opacity: 1;
+  color: rgb(var(--lime));
+  border-color: rgb(var(--lime));
+}
+.egg-card {
+  position: absolute;
+  right: 12px;
+  bottom: 46px;
+  max-width: min(360px, calc(100% - 24px));
+  padding: 12px 14px;
+  background: rgb(var(--ink-50) / 0.95);
+  border: 1px solid rgb(var(--ink-500));
+  animation: popIn 0.18s ease-out both;
+  cursor: default;
+}
+.egg-lore {
+  font-size: 13px;
+  line-height: 1.45;
+  color: rgb(var(--ink-900));
+}
+.egg-card a {
   display: block;
   margin-top: 8px;
-  font-size: 9px;
-  letter-spacing: 0.08em;
+  font-size: 10px;
+  letter-spacing: 0.06em;
   color: rgb(var(--ink-700));
 }
-.intro-lore a:hover,
-.panel-credit:hover {
+.egg-card a:hover {
   color: rgb(var(--lime));
 }
-.panel-credit {
-  margin: 0;
-  padding: 6px 16px;
-  border-top: 1px solid rgb(var(--ink-400));
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+
+/* ─── Smooth panels & tabs ─────────────────────────────────────────── */
+@keyframes popIn {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.98);
+  }
+}
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+}
+.overlay-dim {
+  animation: fadeIn 0.18s ease-out both;
+}
+.overlay-dim > * {
+  animation: popIn 0.22s cubic-bezier(0.2, 0.9, 0.3, 1) both;
+}
+.toast {
+  animation: popIn 0.2s ease-out both;
+}
+.tab-anim {
+  animation: popIn 0.22s ease-out both;
+}
+/* Tab content wrapper keeps the panel's column layout. */
+.contents-panel {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
 }

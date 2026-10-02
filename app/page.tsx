@@ -7,7 +7,8 @@ import { Tabs, Looks, Now, type Tab } from "@/components/v2/Panel";
 import { ExportPanel } from "@/components/v2/ExportPanel";
 import { CommandPalette, type Command } from "@/components/v2/CommandPalette";
 import { HelpOverlay } from "@/components/v2/HelpOverlay";
-import { Intro } from "@/components/v2/Intro";
+import { Home } from "@/components/v2/Home";
+import { PixelWipe, type PixelWipeHandle } from "@/components/v2/PixelWipe";
 import { VisualizeSection, VIZ_MODE_BITS, type VizMode } from "@/components/VisualizeSection";
 
 import { processBest } from "@/lib/pipeline";
@@ -142,8 +143,16 @@ export default function Page() {
   const [hideUI, setHideUI] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
-  const [intro, setIntro] = useState(false);
+  // Every visit starts on the home screen.
+  const [view, setView] = useState<"home" | "app">("home");
+  const viewRef = useRef(view);
+  viewRef.current = view;
+  const wipeRef = useRef<PixelWipeHandle>(null);
   const firstVisit = useRef(false);
+  // The user has a photo of their own loaded (vs. the sample).
+  const [ownPhoto, setOwnPhoto] = useState(false);
+  const [credit, setCredit] = useState(false);
+  const pendingEnter = useRef<{ x: number; y: number } | null>(null);
   const [theme, setTheme] = useState<"dark" | "light">("dark");
   useEffect(() => {
     setTheme(document.documentElement.dataset.theme === "light" ? "light" : "dark");
@@ -292,6 +301,28 @@ export default function Page() {
     };
   }, [live, source]);
 
+  // ─── Home ↔ app, through the pixel wipe ──────────────────────────────
+  const enterApp = useCallback(
+    (from: { x: number; y: number }) => {
+      const go = () => {
+        setView("app");
+        if (firstVisit.current) {
+          firstVisit.current = false;
+          window.setTimeout(() => say("TAP A LOOK · HOLD THE PHOTO TO COMPARE", 4200), 700);
+        }
+      };
+      if (wipeRef.current) wipeRef.current.run(from, go);
+      else go();
+    },
+    [say]
+  );
+  const goHome = (from: { x: number; y: number }) => {
+    setOverlay(null);
+    if (wipeRef.current) wipeRef.current.run(from, () => setView("home"));
+    else setView("home");
+  };
+  const centerOf = (r: DOMRect) => ({ x: r.left + r.width / 2, y: r.top + r.height / 2 });
+
   // ─── Loading images ──────────────────────────────────────────────────
   const loadBlob = useCallback(
     async (blob: Blob, filename: string, opts: { remember?: boolean } = {}) => {
@@ -312,13 +343,19 @@ export default function Page() {
             say("RECIPE RESTORED FROM IMAGE");
           }
         }
-        if (opts.remember !== false) void idbSet("source", { blob, filename });
+        if (opts.remember !== false) {
+          void idbSet("source", { blob, filename });
+          setOwnPhoto(true);
+          const from = pendingEnter.current;
+          pendingEnter.current = null;
+          if (viewRef.current === "home") enterApp(from ?? { x: innerWidth / 2, y: innerHeight / 2 });
+        }
       } catch (err) {
         console.error("[pixel] image load failed", err);
         say("COULDN'T OPEN THAT FILE");
       }
     },
-    [apply, say]
+    [apply, say, enterApp]
   );
 
   const fileInput = useRef<HTMLInputElement>(null);
@@ -351,6 +388,8 @@ export default function Page() {
     const fromHash = window.location.hash.startsWith("#r=")
       ? decodeRecipe(decodeURIComponent(window.location.hash.slice(3)))
       : null;
+    // A shared link's look is applied, then the address bar goes back to clean.
+    if (window.location.hash) window.history.replaceState(null, "", window.location.pathname);
     const fromLast = decodeRecipe(lsGet("recipe", ""));
     const start = fromHash ?? fromLast ?? DEFAULT_RECIPE;
     committed.current = start;
@@ -366,6 +405,7 @@ export default function Page() {
       const saved = await idbGet<{ blob: Blob; filename: string }>("source");
       if (saved?.blob) {
         await loadBlob(saved.blob, saved.filename, { remember: false });
+        setOwnPhoto(true);
       } else {
         const res = await fetch(SAMPLE.url);
         await loadBlob(await res.blob(), SAMPLE.filename, { remember: false });
@@ -373,18 +413,30 @@ export default function Page() {
       if (!lsGet("seen", false)) {
         lsSet("seen", true);
         firstVisit.current = true;
-        setIntro(true);
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Keep the URL (shareable) and last-session recipe in step.
+  // A shared link opened in an already-open tab: apply it, clean the URL.
+  useEffect(() => {
+    const onHash = () => {
+      if (!window.location.hash.startsWith("#r=")) return;
+      const r = decodeRecipe(decodeURIComponent(window.location.hash.slice(3)));
+      window.history.replaceState(null, "", window.location.pathname);
+      if (r) {
+        apply(r);
+        say("LOOK FROM LINK APPLIED");
+      }
+    };
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, [apply, say]);
+
+  // Remember the look on this device (the URL stays clean).
   useEffect(() => {
     const t = window.setTimeout(() => {
-      const code = encodeRecipe(recipe);
-      window.history.replaceState(null, "", `#r=${code}`);
-      lsSet("recipe", code);
+      lsSet("recipe", encodeRecipe(recipe));
     }, 250);
     return () => window.clearTimeout(t);
   }, [recipe]);
@@ -412,12 +464,21 @@ export default function Page() {
     });
   };
 
-  const baseName = () => (source?.filename ?? "pixel").replace(/\.[^.]+$/, "");
-  const slug = () =>
-    describeRecipe(recipeRef.current)
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-|-$/g, "");
+  /** "chuck-norris (Portra 400).png" — the photo's name and the look, readable. */
+  const fileName = (ext: string) => {
+    const base = (source?.filename ?? "photo").replace(/\.[^.]+$/, "").replace(/\s*\([^)]*\)\s*$/, "") || "photo";
+    const look = describeRecipe(recipeRef.current)
+      .split(" · ")
+      .slice(0, 2)
+      .map((w) =>
+        w
+          // Title-case plain words (PORTRA → Portra); keep acronyms (CGA, C64, PICO-8).
+          .replace(/(^|[\s])([A-Z])([A-Z]{3,})(?=$|[\s,])/g, (_, sp: string, a: string, b: string) => sp + a + b.toLowerCase())
+          .replace(/(\d+)PX\b/, "$1px")
+      )
+      .join(", ");
+    return `${base} (${look === "Original" ? "Pixel" : look}).${ext}`;
+  };
 
   const exportBlob = async (opts: ExportOptions) => {
     if (!output || !source) return null;
@@ -427,7 +488,7 @@ export default function Page() {
       : { canvas: output };
     const canvas = renderExport(r.canvas as HTMLCanvasElement, opts);
     const blob = await toBlob(canvas, opts, encodeRecipe(recipeRef.current));
-    return { blob, name: `${baseName()}-${slug()}.${opts.format === "png" ? "png" : "jpg"}` };
+    return { blob, name: fileName(opts.format === "png" ? "png" : "jpg") };
   };
 
   const save = async (opts = exportOpts) => {
@@ -465,7 +526,8 @@ export default function Page() {
 
   const copyLink = async () => {
     try {
-      await navigator.clipboard.writeText(window.location.href);
+      const url = `${window.location.origin}/#r=${encodeRecipe(recipeRef.current)}`;
+      await navigator.clipboard.writeText(url);
       say("LINK COPIED — IT CARRIES THE LOOK, NOT THE PHOTO");
     } catch {
       say("COULDN'T COPY");
@@ -509,7 +571,10 @@ export default function Page() {
         if (e.key === "Escape") setOverlay(null);
         return;
       }
-      if (intro) return;
+      if (viewRef.current === "home") {
+        if (e.key === "Enter") enterApp({ x: innerWidth / 2, y: innerHeight / 2 });
+        return;
+      }
       if (mod && e.key.toLowerCase() === "z") {
         e.preventDefault();
         if (e.shiftKey) redo();
@@ -693,7 +758,13 @@ export default function Page() {
       />
 
       <header className="bar">
-        <button className="bar-logo" onClick={() => setIntro(true)} title="About PIXEL">PIXEL</button>
+        <button
+          className="bar-logo"
+          onClick={(e) => goHome(centerOf(e.currentTarget.getBoundingClientRect()))}
+          title="Home"
+        >
+          PIXEL
+        </button>
         <button className="bar-file" onClick={openPicker} title="Open another image (or drop / paste one anywhere)">
           <span className="truncate">{source?.filename ?? "…"}</span>
           <span className="bar-file-cta">CHANGE PHOTO</span>
@@ -725,9 +796,32 @@ export default function Page() {
       <main className="stage">
         <Viewer output={output} original={original} crisp={crisp} holdKey={holdKey} busy={busy}>
           {hideUI && <div className="viewer-hint">H · SHOW CONTROLS</div>}
+          {source?.filename === SAMPLE.filename && !hideUI && (
+            <>
+              <button
+                className="egg"
+                onClick={() => setCredit((c) => !c)}
+                aria-expanded={credit}
+                title="Who is this?"
+              >
+                ?
+              </button>
+              {credit && (
+                <div className="egg-card" role="dialog" aria-label="About the test subject">
+                  <p className="egg-lore">
+                    Test subject: Chuck Norris. He approved all 63 looks. Nobody asked him to.
+                  </p>
+                  <a href={SAMPLE.source} target="_blank" rel="noopener">
+                    {SAMPLE.credit}
+                  </a>
+                </div>
+              )}
+            </>
+          )}
         </Viewer>
 
         <aside className="panel">
+          <div key={tab} className="tab-anim contents-panel">
           <Now
             tab={tab}
             recipe={recipe}
@@ -750,12 +844,8 @@ export default function Page() {
             onClearTexture={clearTexture}
             sound={sound}
           />
+          </div>
           <Tabs tab={tab} onTab={setTab} />
-          {source?.filename === SAMPLE.filename && (
-            <a className="panel-credit" href={SAMPLE.source} target="_blank" rel="noopener">
-              {SAMPLE.credit}
-            </a>
-          )}
           <footer className="panel-foot">
             <span>ON-DEVICE · NOTHING UPLOADED</span>
             <button onClick={() => setOverlay("help")} className="hover:text-lime" title="Keyboard shortcuts">
@@ -789,24 +879,18 @@ export default function Page() {
           onClose={() => setOverlay(null)}
         />
       )}
-      {intro && (
-        <Intro
+      {view === "home" && (
+        <Home
           photo={original}
-          hasPhoto={!!source}
-          isSample={source?.filename === SAMPLE.filename}
-          onOpen={openPicker}
-          onClose={() => {
-            setIntro(false);
-            if (firstVisit.current) {
-              firstVisit.current = false;
-              window.setTimeout(() => say("TAP A LOOK · HOLD THE PHOTO TO COMPARE", 4200), 300);
-              if (source?.filename === SAMPLE.filename) {
-                window.setTimeout(() => say(randomFact(), 3600), 4800);
-              }
-            }
+          canContinue={ownPhoto}
+          onOpen={(r) => {
+            pendingEnter.current = centerOf(r);
+            openPicker();
           }}
+          onEnter={(r) => enterApp(centerOf(r))}
         />
       )}
+      <PixelWipe ref={wipeRef} />
       {overlay === "palette" && <CommandPalette commands={commands} onClose={() => setOverlay(null)} />}
       {overlay === "help" && <HelpOverlay onClose={() => setOverlay(null)} />}
     </div>
