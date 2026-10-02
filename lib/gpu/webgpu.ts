@@ -2189,6 +2189,16 @@ export type OverlayParams = {
   opacity: number; // 0..1
 };
 
+/**
+ * A separate pipeline (own device + work textures) for thumbnail rendering,
+ * so small proxy renders never thrash the main preview's texture sizes.
+ */
+let thumbPromise: Promise<WebGPUPipeline | null> | null = null;
+export function getThumbGPU(): Promise<WebGPUPipeline | null> {
+  if (!thumbPromise) thumbPromise = WebGPUPipeline.create();
+  return thumbPromise;
+}
+
 // Singleton initialization — async, cached for app lifetime
 let pipelinePromise: Promise<WebGPUPipeline | null> | null = null;
 export function getWebGPU(): Promise<WebGPUPipeline | null> {

@@ -1,15 +1,28 @@
 # Lores
 
-Browser-only pixel art tool. Drop an image, get authentic 8-bit output — or shoot it on 60 vintage film stocks. Palettes, dithering, film, no upload.
+Browser-only pixel art tool. Vintage film looks and authentic pixel art for your photos — previewed live on your own image, rendered on your GPU. No upload, no account, no watermark.
 
 Live at **[pixel.amoghbajpai.com](https://pixel.amoghbajpai.com)**.
+
+## How it works
+
+Pick a look → adjust one slider → **Save**.
+
+- **Three tabs**: FILM (63 looks), PIXEL (size, colours, pattern), MORE (texture, sound).
+- Every option is a live thumbnail of *your* photo; hover on desktop previews it full-size.
+- **Hold the photo** (or `\`) to see the original. **⚄ Surprise** (Space) rolls a new look.
+- Undo / redo, and the session survives a reload (IndexedDB + localStorage).
+- The URL is the recipe (`#r=1~px:8~pal:pico8~film:portra400.s7`): copy it to share a look, never the photo.
+- Saved PNGs carry the recipe in a `tEXt` chunk — drop one back in and the look comes with it.
+- Save options: native ×1–8, or padded frames for IG 4:5 / 3:4, Story 9:16, square.
+- Keyboard (optional): `← →` next look, `1 2 3` tabs, `F` favourite, `⌘S` save, `⌘K` search everything, `?` all keys.
 
 ## Features
 
 - **Block-average pixelation** with adjustable size (1–48 px)
 - **9 palette presets**: Game Boy, GB Pocket, CGA, PICO-8, Sweetie 16, C64, Endesga 32, Mono, Original
 - **Dithering**: none, Floyd-Steinberg, Bayer 4×4, Bayer 8×8
-- **Film**: 60 vintage film, camera, and print-process looks in six groups —
+- **Film**: 63 vintage film, camera, and print-process looks in six groups —
   colour negative (Portra, Gold, Superia, Wolfen NC500…), slide & cinema
   (Kodachrome, Velvia, Vision3→2383 print, CineStill 800T halation,
   Technicolor 2-strip), lab & decay (cross-process, redscale, LomoChrome

@@ -34,6 +34,8 @@ type Props = {
   onModeChange: (m: VizMode) => void;
   onIntensityChange: (v: number) => void;
   onBassBumpChange: (v: number) => void;
+  /** Render without the numbered Section chrome (embedded in another panel). */
+  bare?: boolean;
 };
 
 export function VisualizeSection({
@@ -43,6 +45,7 @@ export function VisualizeSection({
   onModeChange,
   onIntensityChange,
   onBassBumpChange,
+  bare,
 }: Props) {
   const audio = getAudio();
   const [state, setState] = useState<AudioState>(audio.state);
@@ -154,7 +157,7 @@ export function VisualizeSection({
       : "EMPTY";
 
   return (
-    <Section index="07" title="VISUALIZE" badge={badge}>
+    <Wrap bare={bare} badge={badge}>
       <div className="space-y-3">
         {/* Source toggle — file vs mic */}
         <div>
@@ -401,7 +404,7 @@ export function VisualizeSection({
           adds GPU FX. Needs an image loaded first.
         </p>
       </div>
-    </Section>
+    </Wrap>
   );
 }
 
@@ -457,5 +460,14 @@ function SignalBar({ label, value }: { label: string; value: number }) {
         {pct.toFixed(0)}
       </span>
     </div>
+  );
+}
+
+function Wrap({ bare, badge, children }: { bare?: boolean; badge: string; children: React.ReactNode }) {
+  if (bare) return <>{children}</>;
+  return (
+    <Section index="07" title="VISUALIZE" badge={badge}>
+      {children}
+    </Section>
   );
 }

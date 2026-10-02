@@ -17,21 +17,21 @@ const display = VT323({
 });
 
 export const metadata: Metadata = {
-  title: "LORES // PIXEL ART OPERATOR",
+  title: "LORES — film & pixel looks for your photos",
   description:
-    "Browser-only pixel art tool. Drop an image, get authentic 8-bit output. Palettes, dithering, no upload.",
+    "63 vintage film looks and authentic pixel art for your photos — previewed on your own image, rendered on your GPU. No upload, no account, no watermark.",
   metadataBase: new URL("https://pixel.amoghbajpai.com"),
   openGraph: {
-    title: "Lores — Pixel Art Operator",
-    description: "Drop an image, get authentic pixel art. Runs in your browser.",
+    title: "Lores — film & pixel looks",
+    description: "Vintage film looks and pixel art for your photos. Runs in your browser.",
     url: "https://pixel.amoghbajpai.com",
     siteName: "Lores",
     type: "website",
   },
   twitter: {
     card: "summary_large_image",
-    title: "Lores — Pixel Art Operator",
-    description: "Drop an image, get authentic pixel art. Runs in your browser.",
+    title: "Lores — film & pixel looks",
+    description: "Vintage film looks and pixel art for your photos. Runs in your browser.",
   },
   icons: { icon: "/favicon.svg" },
 };

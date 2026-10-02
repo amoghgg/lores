@@ -220,11 +220,13 @@ export async function processBest(
   source: HTMLImageElement | ImageBitmap,
   settings: Settings,
   overlay?: OverlayInput | null,
-  film?: FilmInput | null
+  film?: FilmInput | null,
+  /** Render on the thumbnail GPU instance instead of the main one. */
+  target: "main" | "thumb" = "main"
 ): Promise<ProcessResult & { engine: "gpu" | "cpu" }> {
-  const { gpuCanHandle, getWebGPU } = await import("./gpu/webgpu");
+  const { gpuCanHandle, getWebGPU, getThumbGPU } = await import("./gpu/webgpu");
   if (gpuCanHandle(settings)) {
-    const gpu = await getWebGPU();
+    const gpu = await (target === "thumb" ? getThumbGPU() : getWebGPU());
     if (gpu) {
       try {
         // Sync the overlay texture upload to the live GPU bitmap. setOverlayTexture
