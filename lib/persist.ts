@@ -2,7 +2,7 @@
 // localStorage. Everything is best-effort — private windows and blocked
 // storage just mean the session doesn't survive a reload.
 
-const DB = "lores";
+const DB = "pixel";
 const STORE = "kv";
 
 function open(): Promise<IDBDatabase> {
@@ -25,7 +25,7 @@ export async function idbSet(key: string, value: unknown): Promise<void> {
     });
     db.close();
   } catch (err) {
-    console.warn("[lores] idb write failed", err);
+    console.warn("[pixel] idb write failed", err);
   }
 }
 
@@ -46,7 +46,7 @@ export async function idbGet<T>(key: string): Promise<T | null> {
 
 export function lsGet<T>(key: string, fallback: T): T {
   try {
-    const raw = localStorage.getItem("lores:" + key);
+    const raw = localStorage.getItem("pixel:" + key);
     return raw ? (JSON.parse(raw) as T) : fallback;
   } catch {
     return fallback;
@@ -55,7 +55,7 @@ export function lsGet<T>(key: string, fallback: T): T {
 
 export function lsSet(key: string, value: unknown) {
   try {
-    localStorage.setItem("lores:" + key, JSON.stringify(value));
+    localStorage.setItem("pixel:" + key, JSON.stringify(value));
   } catch {
     /* storage blocked — fine */
   }

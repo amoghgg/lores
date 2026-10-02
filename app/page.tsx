@@ -7,6 +7,7 @@ import { Tabs, Looks, Now, type Tab } from "@/components/v2/Panel";
 import { ExportPanel } from "@/components/v2/ExportPanel";
 import { CommandPalette, type Command } from "@/components/v2/CommandPalette";
 import { HelpOverlay } from "@/components/v2/HelpOverlay";
+import { Intro } from "@/components/v2/Intro";
 import { VisualizeSection, VIZ_MODE_BITS, type VizMode } from "@/components/VisualizeSection";
 
 import { processBest } from "@/lib/pipeline";
@@ -140,6 +141,18 @@ export default function Page() {
   const [hideUI, setHideUI] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
+  const [intro, setIntro] = useState(false);
+  const firstVisit = useRef(false);
+  const [theme, setTheme] = useState<"dark" | "light">("dark");
+  useEffect(() => {
+    setTheme(document.documentElement.dataset.theme === "light" ? "light" : "dark");
+  }, []);
+  const toggleTheme = () => {
+    const next = theme === "light" ? "dark" : "light";
+    setTheme(next);
+    document.documentElement.dataset.theme = next;
+    lsSet("theme", next);
+  };
   const toastT = useRef<number | null>(null);
   const say = useCallback((msg: string, ms = 1600) => {
     setToast(msg);
@@ -214,7 +227,7 @@ export default function Page() {
         if (!dirty.current) setOutput(r.canvas);
       } while (dirty.current);
     } catch (err) {
-      console.error("[lores] render failed", err);
+      console.error("[pixel] render failed", err);
     } finally {
       rendering.current = false;
       setBusy(false);
@@ -266,7 +279,7 @@ export default function Page() {
             bitmapAlreadyOwned: true,
           });
         } catch (err) {
-          console.warn("[lores] live frame failed:", err);
+          console.warn("[pixel] live frame failed:", err);
         }
         raf = requestAnimationFrame(tick);
       };
@@ -282,7 +295,7 @@ export default function Page() {
   const loadBlob = useCallback(
     async (blob: Blob, filename: string, opts: { remember?: boolean } = {}) => {
       try {
-        // A lores PNG carries its recipe — dropping one restores the look.
+        // A PIXEL PNG carries its recipe — dropping one restores the look.
         const code = await readRecipe(blob);
         const next = await decodeImage(blob, filename);
         setSource((prev) => {
@@ -300,7 +313,7 @@ export default function Page() {
         }
         if (opts.remember !== false) void idbSet("source", { blob, filename });
       } catch (err) {
-        console.error("[lores] image load failed", err);
+        console.error("[pixel] image load failed", err);
         say("COULDN'T OPEN THAT FILE");
       }
     },
@@ -358,7 +371,8 @@ export default function Page() {
       }
       if (!lsGet("seen", false)) {
         lsSet("seen", true);
-        window.setTimeout(() => say("TAP A LOOK · HOLD THE PHOTO TO COMPARE", 4200), 900);
+        firstVisit.current = true;
+        setIntro(true);
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -395,7 +409,7 @@ export default function Page() {
     });
   };
 
-  const baseName = () => (source?.filename ?? "lores").replace(/\.[^.]+$/, "");
+  const baseName = () => (source?.filename ?? "pixel").replace(/\.[^.]+$/, "");
   const slug = () =>
     describeRecipe(recipeRef.current)
       .toLowerCase()
@@ -492,6 +506,7 @@ export default function Page() {
         if (e.key === "Escape") setOverlay(null);
         return;
       }
+      if (intro) return;
       if (mod && e.key.toLowerCase() === "z") {
         e.preventDefault();
         if (e.shiftKey) redo();
@@ -675,7 +690,7 @@ export default function Page() {
       />
 
       <header className="bar">
-        <span className="bar-logo">LORES</span>
+        <button className="bar-logo" onClick={() => setIntro(true)} title="About PIXEL">PIXEL</button>
         <button className="bar-file" onClick={openPicker} title="Open another image (or drop / paste one anywhere)">
           <span className="truncate">{source?.filename ?? "…"}</span>
           <span className="bar-file-cta">CHANGE PHOTO</span>
@@ -683,6 +698,14 @@ export default function Page() {
         <span className="flex-1" />
         <button className="bar-icon" onClick={undo} disabled={!past.current.length} title="Undo (⌘Z)" aria-label="Undo">↶</button>
         <button className="bar-icon bar-redo" onClick={redo} disabled={!future.current.length} title="Redo (⇧⌘Z)" aria-label="Redo">↷</button>
+        <button
+          className="bar-icon"
+          onClick={toggleTheme}
+          title={theme === "light" ? "Dark mode" : "Light mode"}
+          aria-label={theme === "light" ? "Switch to dark mode" : "Switch to light mode"}
+        >
+          {theme === "light" ? "☾" : "☀"}
+        </button>
         <button className="bar-btn" onClick={surprise} title="Surprise me (Space)">
           <span aria-hidden>⚄</span> <span className="hidden sm:inline">SURPRISE</span>
         </button>
@@ -756,6 +779,20 @@ export default function Page() {
           onShare={() => void share()}
           onCopyLink={() => void copyLink()}
           onClose={() => setOverlay(null)}
+        />
+      )}
+      {intro && (
+        <Intro
+          photo={original}
+          hasPhoto={!!source}
+          onOpen={openPicker}
+          onClose={() => {
+            setIntro(false);
+            if (firstVisit.current) {
+              firstVisit.current = false;
+              window.setTimeout(() => say("TAP A LOOK · HOLD THE PHOTO TO COMPARE", 4200), 300);
+            }
+          }}
         />
       )}
       {overlay === "palette" && <CommandPalette commands={commands} onClose={() => setOverlay(null)} />}

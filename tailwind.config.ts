@@ -5,24 +5,18 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
-        ink: {
-          0: "#000000",
-          50: "#070707",
-          100: "#0a0a0a",
-          200: "#0f0f0f",
-          300: "#141414",
-          400: "#1a1a1a",
-          500: "#262626",
-          600: "#3d3d3d",
-          700: "#5c5c5c",
-          800: "#a3a3a3",
-          900: "#e8e8e8",
-          950: "#fafafa",
-        },
+        // Theme-aware: values live in CSS variables (app/globals.css),
+        // swapped by [data-theme="light"].
+        ink: Object.fromEntries(
+          ["0", "50", "100", "200", "300", "400", "500", "600", "700", "800", "900", "950"].map((k) => [
+            k,
+            `rgb(var(--ink-${k}) / <alpha-value>)`,
+          ])
+        ),
         lime: {
-          DEFAULT: "#a3e635",
-          dim: "#5c8120",
-          glow: "#bef264",
+          DEFAULT: "rgb(var(--lime) / <alpha-value>)",
+          dim: "rgb(var(--lime-dim) / <alpha-value>)",
+          glow: "rgb(var(--lime-glow) / <alpha-value>)",
         },
         warn: "#fbbf24",
         err: "#ef4444",

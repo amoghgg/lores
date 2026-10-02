@@ -65,7 +65,7 @@ export function ExportPanel({ opts, onChange, width, height, busy, canShare, onD
         </div>
         {opts.format === "png" && (
           <p className="text-[10px] text-ink-700 leading-snug normal-case tracking-normal">
-            The recipe rides inside the PNG. Drop the file back into lores — anyone&apos;s copy — and the look comes with it.
+            The recipe rides inside the PNG. Drop the file back into PIXEL — anyone&apos;s copy — and the look comes with it.
           </p>
         )}
 

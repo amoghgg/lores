@@ -1115,7 +1115,7 @@ export class WebGPUPipeline {
       pipeline.compile();
       return pipeline;
     } catch (err) {
-      console.warn("[lores] WebGPU init failed:", err);
+      console.warn("[pixel] WebGPU init failed:", err);
       return null;
     }
   }

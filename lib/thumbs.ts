@@ -174,7 +174,7 @@ class ThumbRenderer {
           }
           job.resolve(r.canvas);
         } catch (err) {
-          console.warn("[lores] thumb failed", err);
+          console.warn("[pixel] thumb failed", err);
           job.resolve(null);
         }
       }

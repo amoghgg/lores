@@ -252,7 +252,7 @@ export async function processBest(
         });
         return { ...r, engine: "gpu" };
       } catch (err) {
-        console.warn("[lores] GPU pipeline failed, falling back to CPU:", err);
+        console.warn("[pixel] GPU pipeline failed, falling back to CPU:", err);
       }
     }
   }

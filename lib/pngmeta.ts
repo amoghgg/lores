@@ -1,5 +1,5 @@
-// Embed the recipe code in exported PNGs as a tEXt chunk (keyword "lores"),
-// and read it back when someone drops a lores PNG in — their look comes with
+// Embed the recipe code in exported PNGs as a tEXt chunk (keyword "pixel"),
+// and read it back when someone drops a PIXEL PNG in — their look comes with
 // the file, no server involved.
 
 const CRC_TABLE = (() => {
@@ -18,7 +18,9 @@ function crc32(bytes: Uint8Array): number {
   return (c ^ 0xffffffff) >>> 0;
 }
 
-const KEYWORD = "lores";
+const KEYWORD = "pixel";
+// Files saved before the rename used this keyword.
+const LEGACY = "lores";
 
 export async function embedRecipe(png: Blob, code: string): Promise<Blob> {
   const buf = new Uint8Array(await png.arrayBuffer());
@@ -50,7 +52,8 @@ export async function readRecipe(file: Blob): Promise<string | null> {
     if (type === "tEXt" && p + 8 + len <= buf.length) {
       const body = new TextDecoder().decode(buf.subarray(p + 8, p + 8 + len));
       const nul = body.indexOf("\0");
-      if (nul > 0 && body.slice(0, nul) === KEYWORD) return body.slice(nul + 1);
+      const kw = body.slice(0, nul);
+      if (nul > 0 && (kw === KEYWORD || kw === LEGACY)) return body.slice(nul + 1);
     }
     if (type === "IDAT" || type === "IEND") break;
     p += 12 + len;

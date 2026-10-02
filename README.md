@@ -1,4 +1,4 @@
-# Lores
+# PIXEL
 
 Browser-only pixel art tool. Vintage film looks and authentic pixel art for your photos — previewed live on your own image, rendered on your GPU. No upload, no account, no watermark.
 

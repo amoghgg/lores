@@ -75,7 +75,7 @@ export class AudioEngine {
     // doesn't actually process incoming samples. For mic mode we mute via gain.
     this.analyser.connect(this.gain);
     this.gain.connect(this.ctx.destination);
-    console.log("[lores audio] context created", {
+    console.log("[pixel audio] context created", {
       sampleRate: this.ctx.sampleRate,
       state: this.ctx.state,
       fftSize: FFT_SIZE,
@@ -101,7 +101,7 @@ export class AudioEngine {
       this.energyHistory = [];
       this.emit();
     } catch (err) {
-      console.error("[lores] audio decode failed:", err);
+      console.error("[pixel] audio decode failed:", err);
       this.state = "error";
       this.errorMessage = (err as Error).message;
       this.emit();
@@ -129,7 +129,7 @@ export class AudioEngine {
     };
     this.state = "playing";
     this.emit();
-    console.log("[lores audio] play started", {
+    console.log("[pixel audio] play started", {
       pausedAt: this.pausedAt,
       duration: this.duration,
       ctxState: this.ctx.state,
@@ -232,7 +232,7 @@ export class AudioEngine {
       this.energyHistory = [];
       this.state = "mic";
       this.emit();
-      console.log("[lores audio] mic active", {
+      console.log("[pixel audio] mic active", {
         ctxState: this.ctx.state,
         sampleRate: this.ctx.sampleRate,
         tracks: stream.getAudioTracks().map((t) => ({
@@ -242,7 +242,7 @@ export class AudioEngine {
         })),
       });
     } catch (err) {
-      console.error("[lores audio] mic permission failed:", err);
+      console.error("[pixel audio] mic permission failed:", err);
       this.gain.gain.value = 1;
       this.state = "error";
       this.errorMessage =
@@ -268,7 +268,7 @@ export class AudioEngine {
     if (this.state === "mic") {
       this.state = this.buffer ? "loaded" : "empty";
       this.emit();
-      console.log("[lores audio] mic stopped");
+      console.log("[pixel audio] mic stopped");
     }
   }
 
