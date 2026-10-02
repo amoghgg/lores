@@ -1193,3 +1193,31 @@ input[type="range"],
 .bar-logo {
   cursor: pointer;
 }
+
+/* Sample lore + required credit */
+.intro-lore {
+  font-size: 11px;
+  line-height: 1.6;
+  color: rgb(var(--ink-800));
+  animation: introUp 0.5s 1.8s ease-out both;
+}
+.intro-lore a,
+.panel-credit {
+  display: block;
+  margin-top: 8px;
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  color: rgb(var(--ink-700));
+}
+.intro-lore a:hover,
+.panel-credit:hover {
+  color: rgb(var(--lime));
+}
+.panel-credit {
+  margin: 0;
+  padding: 6px 16px;
+  border-top: 1px solid rgb(var(--ink-400));
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

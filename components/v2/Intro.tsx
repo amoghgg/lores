@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { SAMPLE } from "@/lib/sample";
 
 // 5×7 bitmap glyphs for the wordmark.
 const GLYPHS: Record<string, string[]> = {
@@ -21,6 +22,8 @@ type Props = {
   /** The photo to resolve behind the wordmark (current image or sample). */
   photo: HTMLCanvasElement | null;
   hasPhoto: boolean;
+  /** The bundled sample is on screen — introduce the test subject. */
+  isSample?: boolean;
   onOpen: () => void;
   onClose: () => void;
 };
@@ -29,7 +32,7 @@ type Props = {
  * The landing: your photo resolves from giant blocks to full detail while
  * PIXEL assembles on an LED grid. Any key, click, or button dismisses it.
  */
-export function Intro({ photo, onOpen, onClose }: Props) {
+export function Intro({ photo, isSample, onOpen, onClose }: Props) {
   const bg = useRef<HTMLCanvasElement>(null);
   const [leaving, setLeaving] = useState(false);
 
@@ -148,9 +151,17 @@ export function Intro({ photo, onOpen, onClose }: Props) {
             OPEN A PHOTO
           </button>
           <button className="btn-ghost intro-btn" onClick={() => close()}>
-            TRY IT ON THIS ONE →
+            {isSample ? "TRY IT ON CHUCK →" : "TRY IT ON THIS ONE →"}
           </button>
         </div>
+        {isSample && (
+          <p className="intro-lore">
+            Test subject: Chuck Norris. He approved all 63 looks.
+            <br />
+            Nobody asked him to.
+            <a href={SAMPLE.source} target="_blank" rel="noopener">{SAMPLE.credit}</a>
+          </p>
+        )}
       </div>
     </div>
   );

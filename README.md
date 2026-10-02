@@ -67,3 +67,7 @@ MIT — see [LICENSE](./LICENSE).
 ## Contributing
 
 Palette PRs welcome. Add an entry to `lib/palettes.ts` with a clear name, source attribution in the description, and accurate hex values.
+
+## Credits
+
+Sample photo: *Chuck Norris, The Delta Force (1986)* by Yoni S. Hamenahem, [CC BY-SA 3.0](https://creativecommons.org/licenses/by-sa/3.0/), via [Wikimedia Commons](https://commons.wikimedia.org/wiki/File:Chuck_Norris,_The_Delta_Force_1986.jpg). Resized.

@@ -33,6 +33,7 @@ import { getThumbs } from "@/lib/thumbs";
 import { idbGet, idbSet, lsGet, lsSet } from "@/lib/persist";
 import { readRecipe } from "@/lib/pngmeta";
 import { renderExport, saveBlob, toBlob, type ExportOptions } from "@/lib/exporter";
+import { SAMPLE, randomFact } from "@/lib/sample";
 
 // Pixel art doesn't need 12 MP; film looks read fine at 2.5 MP and the GPU
 // stays well under a frame.
@@ -366,8 +367,8 @@ export default function Page() {
       if (saved?.blob) {
         await loadBlob(saved.blob, saved.filename, { remember: false });
       } else {
-        const res = await fetch("/sample.jpg");
-        await loadBlob(await res.blob(), "sample.jpg", { remember: false });
+        const res = await fetch(SAMPLE.url);
+        await loadBlob(await res.blob(), SAMPLE.filename, { remember: false });
       }
       if (!lsGet("seen", false)) {
         lsSet("seen", true);
@@ -397,7 +398,9 @@ export default function Page() {
       if (s) setFilmCat(s.category);
     }
     setTab(next.film !== "none" ? "film" : "pixel");
-    say(describeRecipe(next));
+    // On the sample, every third roll comes with a fact.
+    if (sourceRef.current?.filename === SAMPLE.filename && Math.random() < 0.34) say(randomFact(), 3200);
+    else say(describeRecipe(next));
   }, [apply, say]);
 
   const toggleFavorite = (id: string) => {
@@ -748,6 +751,11 @@ export default function Page() {
             sound={sound}
           />
           <Tabs tab={tab} onTab={setTab} />
+          {source?.filename === SAMPLE.filename && (
+            <a className="panel-credit" href={SAMPLE.source} target="_blank" rel="noopener">
+              {SAMPLE.credit}
+            </a>
+          )}
           <footer className="panel-foot">
             <span>ON-DEVICE · NOTHING UPLOADED</span>
             <button onClick={() => setOverlay("help")} className="hover:text-lime" title="Keyboard shortcuts">
@@ -785,12 +793,16 @@ export default function Page() {
         <Intro
           photo={original}
           hasPhoto={!!source}
+          isSample={source?.filename === SAMPLE.filename}
           onOpen={openPicker}
           onClose={() => {
             setIntro(false);
             if (firstVisit.current) {
               firstVisit.current = false;
               window.setTimeout(() => say("TAP A LOOK · HOLD THE PHOTO TO COMPARE", 4200), 300);
+              if (source?.filename === SAMPLE.filename) {
+                window.setTimeout(() => say(randomFact(), 3600), 4800);
+              }
             }
           }}
         />
