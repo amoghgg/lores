@@ -64,6 +64,57 @@ fn fs(@location(0) uv: vec2f) -> @location(0) vec4f {
 }
 `;
 
+// Grid downsample: one output texel per block, the average of a 4×4 sample
+// lattice inside that block. Palette and dither then run at grid resolution,
+// so patterns land on the pixel-art grid instead of dissolving each block.
+const FRAG_DOWNSAMPLE = /* wgsl */ `
+struct Params {
+  srcRes: vec2f,
+  grid: vec2f,
+  block: f32,
+  _p0: f32,
+  _p1: vec2f,
+};
+
+@group(0) @binding(0) var src: texture_2d<f32>;
+@group(0) @binding(1) var<uniform> p: Params;
+
+@fragment
+fn fs(@location(0) uv: vec2f) -> @location(0) vec4f {
+  let cell = floor(uv * p.grid);
+  let origin = cell * p.block;
+  let maxPx = vec2i(p.srcRes) - vec2i(1);
+  var acc = vec4f(0.0);
+  for (var j = 0; j < 4; j = j + 1) {
+    for (var i = 0; i < 4; i = i + 1) {
+      let o = origin + (vec2f(f32(i), f32(j)) + 0.5) * p.block * 0.25;
+      acc = acc + textureLoad(src, clamp(vec2i(o), vec2i(0), maxPx), 0);
+    }
+  }
+  return acc / 16.0;
+}
+`;
+
+// Grid upscale: every full-res pixel reads its block's grid texel — hard edges.
+const FRAG_UPSCALE = /* wgsl */ `
+struct Params {
+  srcRes: vec2f,
+  grid: vec2f,
+  block: f32,
+  _p0: f32,
+  _p1: vec2f,
+};
+
+@group(0) @binding(0) var grid: texture_2d<f32>;
+@group(0) @binding(1) var<uniform> p: Params;
+
+@fragment
+fn fs(@location(0) uv: vec2f) -> @location(0) vec4f {
+  let cell = vec2i(floor(uv * p.srcRes / p.block));
+  return textureLoad(grid, clamp(cell, vec2i(0), vec2i(p.grid) - vec2i(1)), 0);
+}
+`;
+
 const FRAG_QUANTIZE = /* wgsl */ `
 struct Palette {
   count: u32,
@@ -1052,6 +1103,13 @@ export class WebGPUPipeline {
   private modCopy!: GPUShaderModule;
   private modVizFx!: GPUShaderModule;
   private modFilm!: GPUShaderModule;
+  private modDownsample!: GPUShaderModule;
+  private modUpscale!: GPUShaderModule;
+  private pipelineDownsample!: GPURenderPipeline;
+  private pipelineUpscale!: GPURenderPipeline;
+  private bufGrid!: GPUBuffer;
+  /** Grid-resolution work textures, cached by size (bass pump flips sizes). */
+  private gridCache = new Map<string, GPUTexture[]>();
 
   private samplerLinear!: GPUSampler;
   private samplerLinearFilter!: GPUSampler;
@@ -1190,6 +1248,23 @@ export class WebGPUPipeline {
     this.modCopy = d.createShaderModule({ code: FRAG_COPY });
     this.modVizFx = d.createShaderModule({ code: FRAG_VIZFX });
     this.modFilm = d.createShaderModule({ code: FRAG_FILM });
+    this.modDownsample = d.createShaderModule({ code: FRAG_DOWNSAMPLE });
+    this.modUpscale = d.createShaderModule({ code: FRAG_UPSCALE });
+    this.bufGrid = d.createBuffer({
+      size: 32,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    for (const [mod, key] of [
+      [this.modDownsample, "pipelineDownsample"],
+      [this.modUpscale, "pipelineUpscale"],
+    ] as const) {
+      this[key] = d.createRenderPipeline({
+        layout: "auto",
+        vertex: { module: this.modVert, entryPoint: "vs" },
+        fragment: { module: mod, entryPoint: "fs", targets: [{ format: WORK_FORMAT }] },
+        primitive: { topology: "triangle-list" },
+      });
+    }
 
     this.samplerLinear = d.createSampler({
       magFilter: "nearest",
@@ -1544,6 +1619,32 @@ export class WebGPUPipeline {
     });
   }
 
+  private gridTextures(gw: number, gh: number): GPUTexture[] {
+    const key = `${gw}x${gh}`;
+    const hit = this.gridCache.get(key);
+    if (hit) {
+      // Refresh LRU order.
+      this.gridCache.delete(key);
+      this.gridCache.set(key, hit);
+      return hit;
+    }
+    const usage =
+      GPUTextureUsage.TEXTURE_BINDING |
+      GPUTextureUsage.COPY_DST |
+      GPUTextureUsage.COPY_SRC |
+      GPUTextureUsage.RENDER_ATTACHMENT;
+    const set = [0, 1, 2].map(() =>
+      this.device.createTexture({ size: [gw, gh], format: WORK_FORMAT, usage })
+    );
+    this.gridCache.set(key, set);
+    if (this.gridCache.size > 6) {
+      const [oldKey, old] = this.gridCache.entries().next().value!;
+      old.forEach((t) => t.destroy());
+      this.gridCache.delete(oldKey);
+    }
+    return set;
+  }
+
   private dispose() {
     this.texSource?.destroy();
     this.texA?.destroy();
@@ -1589,6 +1690,11 @@ export class WebGPUPipeline {
       viz?: VizParams;
       overlay?: OverlayParams;
       film?: FilmParams | null;
+      /**
+       * Palette + dither already done on the CPU (error-diffusion dithers) at
+       * the working resolution — grid size when pixelating, else full size.
+       */
+      cpuGrid?: ImageBitmap;
       bitmapAlreadyOwned?: boolean;
       /**
        * If true, await `queue.onSubmittedWorkDone()` after submit so the canvas
@@ -1658,46 +1764,53 @@ export class WebGPUPipeline {
 
     const encoder = this.device.createCommandEncoder();
 
-    // Track which work texture currently holds the latest result.
-    let currentTex: GPUTexture = this.texSource!;
-    let nextTex: GPUTexture = this.texA!;
+    // ─── Working resolution ───────────────────────────────────────────────
+    // With pixelation on, palette + dither run on the block grid (one texel
+    // per block), then upscale with hard edges. Patterns sit on the pixel
+    // grid, and the work shrinks by block² — the big speed win.
+    const effBlock = effectiveBlockSize(settings);
+    const onGrid = effBlock > 1;
+    const gw = Math.ceil(w / effBlock);
+    const gh = Math.ceil(h / effBlock);
+    const rw = onGrid ? gw : w;
+    const rh = onGrid ? gh : h;
+    const full = [this.texA!, this.texB!, this.texC!];
+    const ring = onGrid ? this.gridTextures(gw, gh) : full;
 
+    let currentTex: GPUTexture = this.texSource!;
+    let nextTex: GPUTexture = ring[0];
     const swap = () => {
-      const tmp = currentTex;
       currentTex = nextTex;
-      // Cycle texture roles: texA → texB → texC → texA
-      if (nextTex === this.texA) nextTex = this.texB!;
-      else if (nextTex === this.texB) nextTex = this.texC!;
-      else nextTex = this.texA!;
-      void tmp;
+      nextTex = ring[(ring.indexOf(nextTex) + 1) % ring.length];
     };
 
-    // ─── 1. PIXELATE ──────────────────────────────────────────────────────
-    const effBlock = effectiveBlockSize(settings);
-    if (effBlock > 1) {
+    const gridParams = () =>
       this.device.queue.writeBuffer(
-        this.bufPixelate,
+        this.bufGrid,
         0,
-        new Float32Array([w, h]).buffer
+        new Float32Array([w, h, gw, gh, effBlock, 0, 0, 0]).buffer
       );
-      this.device.queue.writeBuffer(
-        this.bufPixelate,
-        8,
-        new Uint32Array([effBlock, 0]).buffer
+
+    // ─── 1. SOURCE → working texture ─────────────────────────────────────
+    const cpuGrid = options?.cpuGrid;
+    if (cpuGrid) {
+      // Palette + error-diffusion dither already ran on the CPU at this size.
+      this.device.queue.copyExternalImageToTexture(
+        { source: cpuGrid },
+        { texture: nextTex },
+        [rw, rh]
       );
+      swap();
+    } else if (onGrid) {
+      gridParams();
       const bg = this.device.createBindGroup({
-        layout: this.pipelinePixelate.getBindGroupLayout(0),
+        layout: this.pipelineDownsample.getBindGroupLayout(0),
         entries: [
           { binding: 0, resource: currentTex.createView() },
-          { binding: 1, resource: { buffer: this.bufPixelate } },
+          { binding: 1, resource: { buffer: this.bufGrid } },
         ],
       });
-      this.renderPass(
-        encoder,
-        nextTex.createView(),
-        this.pipelinePixelate,
-        bg
-      );
+      this.renderPass(encoder, nextTex.createView(), this.pipelineDownsample, bg);
       swap();
     }
 
@@ -1705,7 +1818,7 @@ export class WebGPUPipeline {
     const palette = getPalette(settings.paletteId);
     let beforePaletteTex: GPUTexture | null = null;
 
-    if (palette.colors.length > 0 && settings.paletteAmount > 0) {
+    if (!cpuGrid && palette.colors.length > 0 && settings.paletteAmount > 0) {
       // Snapshot the pre-palette state for stipple blend
       beforePaletteTex = currentTex;
 
@@ -1731,12 +1844,7 @@ export class WebGPUPipeline {
           { binding: 2, resource: { buffer: this.bufQuantize } },
         ],
       });
-      this.renderPass(
-        encoder,
-        nextTex.createView(),
-        this.pipelineQuantize,
-        bg
-      );
+      this.renderPass(encoder, nextTex.createView(), this.pipelineQuantize, bg);
       swap();
 
       // Stipple blend pre-palette and quantized using paletteAmount
@@ -1744,7 +1852,7 @@ export class WebGPUPipeline {
         this.device.queue.writeBuffer(
           this.bufStipple,
           0,
-          new Float32Array([w, h, settings.paletteAmount, 0]).buffer
+          new Float32Array([rw, rh, settings.paletteAmount, 0]).buffer
         );
         const stippleBg = this.device.createBindGroup({
           layout: this.pipelineStipple.getBindGroupLayout(0),
@@ -1755,41 +1863,28 @@ export class WebGPUPipeline {
             { binding: 3, resource: { buffer: this.bufStipple } },
           ],
         });
-        this.renderPass(
-          encoder,
-          nextTex.createView(),
-          this.pipelineStipple,
-          stippleBg
-        );
-        swap();
+        // Both inputs must differ from the target: pick the free slot.
+        const out = ring.find((t) => t !== beforePaletteTex && t !== currentTex)!;
+        this.renderPass(encoder, out.createView(), this.pipelineStipple, stippleBg);
+        currentTex = out;
+        nextTex = ring.find((t) => t !== currentTex && t !== beforePaletteTex) ?? ring[0];
       }
     }
 
     // ─── 3. GPU DITHER (Bayer / Blue noise / IGN / Halftone) ─────────────
-    // Floyd-Steinberg / Atkinson / JJN are sequential — handled on CPU.
-    const gpuDithers = new Set([
-      "bayer4",
-      "bayer8",
-      "bluenoise",
-      "ign",
-      "halftone",
-    ]);
+    // Floyd-Steinberg / Atkinson / JJN are sequential — those arrive as cpuGrid.
+    const gpuDithers = new Set(["bayer4", "bayer8", "bluenoise", "ign", "halftone"]);
     const isGpuDither = gpuDithers.has(settings.dither);
     if (
+      !cpuGrid &&
       isGpuDither &&
       palette.colors.length > 0 &&
       settings.ditherAmount > 0 &&
       beforePaletteTex
     ) {
-      // Snapshot afterPalette BEFORE the dither pass. The dither writes into
-      // nextTex, which is by definition different from currentTex, so this
-      // reference stays valid through the pass and we can stipple-blend
-      // against it directly without a re-quantize round-trip (which used to
-      // collide with beforePaletteTex when pixelate had run).
       const afterPaletteTex = currentTex;
+      const target = ring.find((t) => t !== afterPaletteTex && t !== beforePaletteTex)!;
 
-      // Build the right uniform + bind group for the chosen dither, using
-      // beforePaletteTex as input (each shader does its own bias-then-quantize).
       let ditherPipeline: GPURenderPipeline;
       let ditherBindGroup: GPUBindGroup;
 
@@ -1807,11 +1902,10 @@ export class WebGPUPipeline {
       if (settings.dither === "bayer4" || settings.dither === "bayer8") {
         const matrixSize = settings.dither === "bayer4" ? 4 : 8;
         const buf = new ArrayBuffer(16 + 32 * 16);
-        new Float32Array(buf, 0, 2).set([w, h]);
+        new Float32Array(buf, 0, 2).set([rw, rh]);
         new Uint32Array(buf, 8, 2).set([palette.colors.length, matrixSize]);
         writePaletteVec4(buf, 16);
         this.device.queue.writeBuffer(this.bufBayer, 0, buf);
-
         ditherPipeline = this.pipelineBayer;
         ditherBindGroup = this.device.createBindGroup({
           layout: this.pipelineBayer.getBindGroupLayout(0),
@@ -1821,89 +1915,70 @@ export class WebGPUPipeline {
             { binding: 2, resource: { buffer: this.bufBayer } },
           ],
         });
-      } else if (settings.dither === "bluenoise") {
-        // Layout: vec2 res(8) + count(4) + strength(4) = 16 header + palette
+      } else if (settings.dither === "bluenoise" || settings.dither === "ign") {
+        // Same uniform layout; blue noise also binds its LUT.
         const buf = new ArrayBuffer(16 + 32 * 16);
-        new Float32Array(buf, 0, 2).set([w, h]);
+        new Float32Array(buf, 0, 2).set([rw, rh]);
         new Uint32Array(buf, 8, 1)[0] = palette.colors.length;
-        new Float32Array(buf, 12, 1)[0] = 0.4;
+        new Float32Array(buf, 12, 1)[0] = settings.dither === "bluenoise" ? 0.4 : 0.35;
         writePaletteVec4(buf, 16);
         this.device.queue.writeBuffer(this.bufNoiseDither, 0, buf);
-
-        ditherPipeline = this.pipelineBlueNoise;
-        ditherBindGroup = this.device.createBindGroup({
-          layout: this.pipelineBlueNoise.getBindGroupLayout(0),
-          entries: [
-            { binding: 0, resource: this.samplerLinear },
-            { binding: 1, resource: beforePaletteTex.createView() },
-            { binding: 2, resource: this.texBlueNoise!.createView() },
-            { binding: 3, resource: { buffer: this.bufNoiseDither } },
-          ],
-        });
-      } else if (settings.dither === "ign") {
-        // Same uniform layout as bluenoise; different pipeline (no LUT binding)
-        const buf = new ArrayBuffer(16 + 32 * 16);
-        new Float32Array(buf, 0, 2).set([w, h]);
-        new Uint32Array(buf, 8, 1)[0] = palette.colors.length;
-        new Float32Array(buf, 12, 1)[0] = 0.35;
-        writePaletteVec4(buf, 16);
-        this.device.queue.writeBuffer(this.bufNoiseDither, 0, buf);
-
-        ditherPipeline = this.pipelineIGN;
-        ditherBindGroup = this.device.createBindGroup({
-          layout: this.pipelineIGN.getBindGroupLayout(0),
-          entries: [
-            { binding: 0, resource: this.samplerLinear },
-            { binding: 1, resource: beforePaletteTex.createView() },
-            { binding: 2, resource: { buffer: this.bufNoiseDither } },
-          ],
-        });
+        if (settings.dither === "bluenoise") {
+          ditherPipeline = this.pipelineBlueNoise;
+          ditherBindGroup = this.device.createBindGroup({
+            layout: this.pipelineBlueNoise.getBindGroupLayout(0),
+            entries: [
+              { binding: 0, resource: this.samplerLinear },
+              { binding: 1, resource: beforePaletteTex.createView() },
+              { binding: 2, resource: this.texBlueNoise!.createView() },
+              { binding: 3, resource: { buffer: this.bufNoiseDither } },
+            ],
+          });
+        } else {
+          ditherPipeline = this.pipelineIGN;
+          ditherBindGroup = this.device.createBindGroup({
+            layout: this.pipelineIGN.getBindGroupLayout(0),
+            entries: [
+              { binding: 0, resource: this.samplerLinear },
+              { binding: 1, resource: beforePaletteTex.createView() },
+              { binding: 2, resource: { buffer: this.bufNoiseDither } },
+            ],
+          });
+        }
       } else {
-        // halftone — cellSize tracks block size so the dot grid matches the
-        // pixelation feel; clamped to a visible minimum.
-        const cellSize = Math.max(4, settings.blockSize);
+        // Halftone: on the grid each dot cell spans 4 blocks; at full res the
+        // cell scales with the image so dots read at any size.
+        const cellSize = onGrid ? 4 : Math.max(4, Math.round(Math.min(w, h) / 160));
         const buf = new ArrayBuffer(16 + 32 * 16);
-        new Float32Array(buf, 0, 2).set([w, h]);
+        new Float32Array(buf, 0, 2).set([rw, rh]);
         new Uint32Array(buf, 8, 2).set([palette.colors.length, cellSize]);
         writePaletteVec4(buf, 16);
         this.device.queue.writeBuffer(this.bufHalftone, 0, buf);
-
         ditherPipeline = this.pipelineHalftone;
+        // The halftone shader reads texels directly — no sampler binding
+        // (passing one made the bind group invalid and the pass blank).
         ditherBindGroup = this.device.createBindGroup({
           layout: this.pipelineHalftone.getBindGroupLayout(0),
           entries: [
-            { binding: 0, resource: this.samplerLinear },
             { binding: 1, resource: beforePaletteTex.createView() },
             { binding: 2, resource: { buffer: this.bufHalftone } },
           ],
         });
       }
 
-      this.renderPass(
-        encoder,
-        nextTex.createView(),
-        ditherPipeline,
-        ditherBindGroup
-      );
-      const ditheredTex = nextTex;
-      swap();
+      this.renderPass(encoder, target.createView(), ditherPipeline, ditherBindGroup);
+      const ditheredTex = target;
+      currentTex = ditheredTex;
 
-      // Stipple blend (afterPalette, dithered, ditherAmount). We saved
-      // afterPaletteTex above; pick an output slot that's neither it nor
-      // ditheredTex, so the render-pass inputs and target are all distinct
-      // (3 slots, 2 inputs, 1 output — always fits).
+      // Stipple blend (afterPalette, dithered, ditherAmount) into the slot
+      // that's neither input.
       if (settings.ditherAmount < 1) {
-        const allTex = [this.texA!, this.texB!, this.texC!];
-        const out = allTex.find(
-          (t) => t !== afterPaletteTex && t !== ditheredTex
-        )!;
-
+        const out = ring.find((t) => t !== afterPaletteTex && t !== ditheredTex)!;
         this.device.queue.writeBuffer(
           this.bufStipple,
           0,
-          new Float32Array([w, h, settings.ditherAmount, 0]).buffer
+          new Float32Array([rw, rh, settings.ditherAmount, 0]).buffer
         );
-
         const stippleBg = this.device.createBindGroup({
           layout: this.pipelineStipple.getBindGroupLayout(0),
           entries: [
@@ -1913,16 +1988,26 @@ export class WebGPUPipeline {
             { binding: 3, resource: { buffer: this.bufStipple } },
           ],
         });
-        this.renderPass(
-          encoder,
-          out.createView(),
-          this.pipelineStipple,
-          stippleBg
-        );
+        this.renderPass(encoder, out.createView(), this.pipelineStipple, stippleBg);
         currentTex = out;
-        nextTex = ditheredTex;
       }
     }
+
+    // ─── 3b. GRID → FULL RES (hard edges) ─────────────────────────────────
+    if (onGrid) {
+      gridParams();
+      const bg = this.device.createBindGroup({
+        layout: this.pipelineUpscale.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: currentTex.createView() },
+          { binding: 1, resource: { buffer: this.bufGrid } },
+        ],
+      });
+      this.renderPass(encoder, full[0].createView(), this.pipelineUpscale, bg);
+      currentTex = full[0];
+    }
+    // Downstream stages (film, overlay) work on the full-res ring.
+    nextTex = full.find((t) => t !== currentTex)!;
 
     // ─── 4. FILM ─────────────────────────────────────────────────────────
     // Stock / camera / print emulation on top of the pixel-art result. With
@@ -2206,12 +2291,11 @@ export function getWebGPU(): Promise<WebGPUPipeline | null> {
   return pipelinePromise;
 }
 
-/** True iff this settings combo can be served by the GPU pipeline. */
-export function gpuCanHandle(settings: Settings): boolean {
-  // Sequential error-diffusion dithers stay on CPU.
+/** Error-diffusion dithers are sequential: their palette+dither stage runs on the CPU. */
+export function needsCpuGrid(settings: Settings): boolean {
   return (
-    settings.dither !== "floyd" &&
-    settings.dither !== "atkinson" &&
-    settings.dither !== "jarvis"
+    settings.paletteId !== "none" &&
+    settings.ditherAmount > 0 &&
+    (settings.dither === "floyd" || settings.dither === "atkinson" || settings.dither === "jarvis")
   );
 }

@@ -8,6 +8,7 @@ import { ExportPanel } from "@/components/v2/ExportPanel";
 import { CommandPalette, type Command } from "@/components/v2/CommandPalette";
 import { HelpOverlay } from "@/components/v2/HelpOverlay";
 import { Home } from "@/components/v2/Home";
+import { Layers } from "@/components/v2/Layers";
 import { PixelWipe, type PixelWipeHandle } from "@/components/v2/PixelWipe";
 import { VisualizeSection, VIZ_MODE_BITS, type VizMode } from "@/components/VisualizeSection";
 
@@ -100,6 +101,13 @@ export default function Page() {
   const future = useRef<Recipe[]>([]);
   const [, bumpHistory] = useState(0);
   const [preview, setPreview] = useState<Recipe | null>(null);
+  // Thumbnails trail the live recipe: dragging a slider doesn't re-render
+  // twenty previews per tick — they catch up once the hand stops.
+  const [thumbBase, setThumbBase] = useState<Recipe>(DEFAULT_RECIPE);
+  useEffect(() => {
+    const t = window.setTimeout(() => setThumbBase(recipe), 220);
+    return () => window.clearTimeout(t);
+  }, [recipe]);
 
   /** Apply a new recipe. `commit` = it's a settled change (one undo step). */
   const apply = useCallback((next: Recipe, commit = true) => {
@@ -801,6 +809,15 @@ export default function Page() {
       <main className="stage">
         <Viewer output={output} original={original} crisp={crisp} holdKey={holdKey} busy={busy}>
           {hideUI && <div className="viewer-hint">H · SHOW CONTROLS</div>}
+          {!hideUI && (
+            <Layers
+              recipe={recipe}
+              hasTexture={!!texture}
+              set={(patch) => set(patch)}
+              onClearTexture={clearTexture}
+              onOpen={setTab}
+            />
+          )}
           {source?.filename === SAMPLE.filename && !hideUI && (
             <>
               <button
@@ -838,6 +855,7 @@ export default function Page() {
           <Looks
             tab={tab}
             recipe={recipe}
+            base={thumbBase}
             epoch={epoch}
             set={set}
             onPreview={setPreview}

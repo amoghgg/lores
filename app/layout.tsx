@@ -1,11 +1,10 @@
 import type { Metadata } from "next";
-import { JetBrains_Mono, VT323 } from "next/font/google";
+import { Inter, VT323 } from "next/font/google";
 import "./globals.css";
 
-const mono = JetBrains_Mono({
+const sans = Inter({
   subsets: ["latin"],
-  weight: ["400", "500", "700"],
-  variable: "--font-mono",
+  variable: "--font-sans",
   display: "swap",
 });
 
@@ -42,7 +41,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en" className={`${mono.variable} ${display.variable}`} suppressHydrationWarning>
+    <html lang="en" className={`${sans.variable} ${display.variable}`} suppressHydrationWarning>
       <head>
         {/* Set the theme before first paint: saved choice, else the OS setting. */}
         <script
@@ -51,7 +50,7 @@ export default function RootLayout({
           }}
         />
       </head>
-      <body className="bg-ink-100 text-ink-900 font-mono antialiased">
+      <body className="bg-ink-100 text-ink-900 font-sans antialiased">
         {children}
       </body>
     </html>

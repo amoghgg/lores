@@ -22,7 +22,8 @@ const config: Config = {
         err: "#ef4444",
       },
       fontFamily: {
-        mono: ["var(--font-mono)", "ui-monospace", "monospace"],
+        sans: ["var(--font-sans)", "system-ui", "sans-serif"],
+        mono: ["ui-monospace", "SFMono-Regular", "monospace"],
         display: ["var(--font-display)", "monospace"],
       },
       letterSpacing: {

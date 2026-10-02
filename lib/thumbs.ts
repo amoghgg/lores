@@ -120,9 +120,9 @@ class ThumbRenderer {
     } else {
       const w = Math.min(size, src.width);
       const h = Math.min(size, src.height);
-      // Centre-ish crop, nudged up a little — subjects sit above centre.
+      // Centre crop nudged up to the upper third — where faces and subjects sit.
       const x = Math.round((src.width - w) / 2);
-      const y = Math.round((src.height - h) * 0.42);
+      const y = Math.round((src.height - h) * 0.3);
       bmp = await createImageBitmap(src, x, y, w, h);
     }
     if (this.source !== src) {

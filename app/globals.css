@@ -13,9 +13,9 @@
   --ink-300: 20 20 20;
   --ink-400: 26 26 26;
   --ink-500: 38 38 38;
-  --ink-600: 61 61 61;
-  --ink-700: 92 92 92;
-  --ink-800: 163 163 163;
+  --ink-600: 96 96 96;
+  --ink-700: 156 156 156;
+  --ink-800: 204 204 204;
   --ink-900: 232 232 232;
   --ink-950: 250 250 250;
   /* Accent for lines/text, and the fill behind SAVE. */
@@ -38,9 +38,9 @@
   --ink-300: 226 221 209;
   --ink-400: 216 210 196;
   --ink-500: 198 191 175;
-  --ink-600: 163 156 140;
-  --ink-700: 120 114 102;
-  --ink-800: 74 70 62;
+  --ink-600: 138 131 116;
+  --ink-700: 88 83 73;
+  --ink-800: 52 49 43;
   --ink-900: 28 27 24;
   --ink-950: 10 10 10;
   /* Lime text on paper needs to be deep to read; the SAVE fill stays bright. */
@@ -62,8 +62,8 @@
   body {
     background: rgb(var(--ink-100));
     color: rgb(var(--ink-900));
-    font-family: var(--font-mono), ui-monospace, monospace;
-    font-feature-settings: "ss02", "ss19", "calt", "liga";
+    font-family: var(--font-sans), system-ui, -apple-system, sans-serif;
+    font-feature-settings: "cv11", "ss01", "tnum";
     -webkit-font-smoothing: antialiased;
   }
 
@@ -1291,4 +1291,124 @@ input[type="range"],
   flex-direction: column;
   flex: 1 1 auto;
   min-height: 0;
+}
+
+/* ═══ Type pass: Inter, readable sizes, calm tracking ═══════════════════
+   Overrides the earlier mono-era sizes. Pixel font = PIXEL logo only. */
+.bar-file { font-size: 13px; }
+.bar-file-cta { font-size: 11px; letter-spacing: 0.04em; }
+.bar-btn { font-size: 13px; font-weight: 600; letter-spacing: 0.04em; }
+.btn-primary { font-size: 13px; font-weight: 700; letter-spacing: 0.06em; }
+.btn-ghost { font-size: 12px; font-weight: 600; letter-spacing: 0.03em; color: rgb(var(--ink-800)); }
+.tabs-btn { font-size: 13px; font-weight: 600; letter-spacing: 0.1em; color: rgb(var(--ink-700)); }
+.tabs-on { color: rgb(var(--lime)); }
+.now-title {
+  font-family: var(--font-sans), system-ui, sans-serif;
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+.now-sub { font-size: 12px; letter-spacing: 0.02em; color: rgb(var(--ink-700)); }
+.now-adjust { font-size: 11px; font-weight: 600; letter-spacing: 0.06em; }
+.now-note { font-size: 13px; line-height: 1.5; color: rgb(var(--ink-800)); }
+.range { grid-template-columns: 92px 1fr 52px; }
+.range-label { font-size: 12px; font-weight: 600; letter-spacing: 0.02em; color: rgb(var(--ink-800)); }
+.range-value { font-size: 13px; }
+.chip { font-size: 12px; font-weight: 600; letter-spacing: 0.02em; color: rgb(var(--ink-700)); padding: 7px 12px; border-color: rgb(var(--ink-500)); }
+.chip-on { color: rgb(var(--lime)); border-color: rgb(var(--lime)); }
+.row-title { font-size: 12px; font-weight: 700; letter-spacing: 0.08em; color: rgb(var(--ink-800)); }
+.row-note { font-size: 13px; color: rgb(var(--ink-700)); }
+.thumb-name { font-size: 11px; font-weight: 600; letter-spacing: 0.01em; }
+.toast { font-size: 13px; font-weight: 600; letter-spacing: 0.03em; }
+.panel-foot { font-size: 11px; letter-spacing: 0.04em; color: rgb(var(--ink-700)); }
+.tab { font-size: 12px; font-weight: 600; letter-spacing: 0.02em; color: rgb(var(--ink-800)); }
+.kbd { font-size: 12px; }
+.palette-group { font-size: 11px; letter-spacing: 0.04em; color: rgb(var(--ink-700)); }
+.palette-label { font-size: 14px; }
+.palette-hint { font-size: 12px; color: rgb(var(--ink-700)); }
+.viewer-badge { font-size: 12px; font-weight: 600; letter-spacing: 0.1em; }
+.home-tag { font-weight: 500; }
+.home-btn { font-size: 15px; letter-spacing: 0.08em; }
+.export .text-\[9px\],
+.export .text-\[10px\] { font-size: 12px !important; letter-spacing: 0.02em; }
+.sound .text-\[9px\],
+.sound .text-\[10px\] { font-size: 12px !important; letter-spacing: 0.02em; }
+
+/* ─── Layers: what's stacked on the photo ─────────────────────────────── */
+.layers {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  right: 52px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  pointer-events: none;
+}
+.layer {
+  pointer-events: auto;
+  display: inline-flex;
+  align-items: center;
+  height: 30px;
+  background: rgb(var(--ink-50) / 0.88);
+  border: 1px solid rgb(var(--ink-500));
+  backdrop-filter: blur(6px);
+  font-size: 12px;
+  font-weight: 600;
+  color: rgb(var(--ink-900));
+  animation: popIn 0.18s ease-out both;
+}
+.layer-main {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 100%;
+  padding: 0 4px 0 10px;
+}
+.layer-kind {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: rgb(var(--lime));
+}
+.layer-x {
+  width: 28px;
+  height: 100%;
+  font-size: 15px;
+  color: rgb(var(--ink-700));
+}
+.layer-x:hover {
+  color: rgb(var(--err));
+}
+.layer-main:hover {
+  color: rgb(var(--lime));
+}
+@media (max-width: 639px) {
+  .layers {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+    left: 8px;
+    bottom: 8px;
+    right: 44px;
+  }
+  .layers::-webkit-scrollbar {
+    display: none;
+  }
+  .layer {
+    flex: none;
+    height: 28px;
+    font-size: 11px;
+  }
+  .now {
+    padding: 10px 14px;
+  }
+  .now-title {
+    font-size: 17px;
+  }
+}
+@media (max-width: 639px) and (pointer: coarse) {
+  .range {
+    height: 38px;
+  }
 }

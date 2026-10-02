@@ -46,6 +46,8 @@ export function Tabs({ tab, onTab }: { tab: Tab; onTab: (t: Tab) => void }) {
 type LooksProps = {
   tab: Tab;
   recipe: Recipe;
+  /** Recipe the thumbnails render from — trails `recipe` while a slider moves. */
+  base: Recipe;
   epoch: string;
   set: SetRecipe;
   onPreview: (r: Recipe | null) => void;
@@ -67,7 +69,7 @@ export function Looks(p: LooksProps) {
     hoverT.current = window.setTimeout(() => p.onPreview(next), 160);
   };
   const t = (patch: Partial<Recipe>) => {
-    const next = { ...r, ...patch, off: {} };
+    const next = { ...p.base, ...patch, off: {} };
     return { recipe: next, epoch, onHover: (on: boolean) => hover(on ? next : null) };
   };
 
@@ -268,22 +270,21 @@ export function Now({ tab, recipe: r, set, favorites, onToggleFavorite, hasTextu
     const d = describeRecipe({ ...r, film: "none" });
     title = d === "ORIGINAL" ? "NO PIXEL EFFECT" : d;
     sub = r.block > 1 ? "Drag SIZE for bigger or smaller pixels" : "Pick a size, colours or pattern below";
+    // One slider per effect, always in view — no digging under ADJUST.
     main = (
-      <Range label="SIZE" value={r.block} min={1} max={48} reset={1} format={(v) => (v === 1 ? "OFF" : `${v}px`)}
-        onChange={(block) => live({ block })} onCommit={(block) => commit({ block })} />
-    );
-    if (r.palette !== "none") {
-      extra = (
-        <>
+      <>
+        <Range label="SIZE" value={r.block} min={1} max={48} reset={1} format={(v) => (v === 1 ? "OFF" : `${v}px`)}
+          onChange={(block) => live({ block })} onCommit={(block) => commit({ block })} />
+        {r.palette !== "none" && (
           <Range label="COLOURS" value={r.paletteAmt} min={0} max={1} step={0.01} reset={1} format={pct}
             onChange={(paletteAmt) => live({ paletteAmt })} onCommit={(paletteAmt) => commit({ paletteAmt })} />
-          {r.dither !== "none" && (
-            <Range label="PATTERN" value={r.ditherAmt} min={0} max={1} step={0.01} reset={1} format={pct}
-              onChange={(ditherAmt) => live({ ditherAmt })} onCommit={(ditherAmt) => commit({ ditherAmt })} />
-          )}
-        </>
-      );
-    }
+        )}
+        {r.palette !== "none" && r.dither !== "none" && (
+          <Range label="PATTERN" value={r.ditherAmt} min={0} max={1} step={0.01} reset={1} format={pct}
+            onChange={(ditherAmt) => live({ ditherAmt })} onCommit={(ditherAmt) => commit({ ditherAmt })} />
+        )}
+      </>
+    );
   } else {
     title = hasTexture ? "TEXTURE" : "EXTRAS";
     sub = hasTexture ? r.texBlend.toUpperCase() : "Texture overlay and sound-reactive mode";
