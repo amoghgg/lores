@@ -36,6 +36,8 @@ export type Recipe = {
   vignette: number;
   leak: number;
   frame: boolean;
+  /** Burned-in writing (REC, timestamps, date stamp…) — off removes it. */
+  text: boolean;
   seed: number;
   texBlend: BlendName;
   texFit: FitName;
@@ -55,6 +57,7 @@ export type FilmLayer = {
   vignette: number;
   leak: number;
   frame: boolean;
+  text: boolean;
   seed: number;
 };
 
@@ -75,6 +78,7 @@ export const DEFAULT_RECIPE: Recipe = {
   vignette: 1,
   leak: 1,
   frame: true,
+  text: true,
   seed: 7,
   texBlend: "multiply",
   texFit: "cover",
@@ -84,7 +88,7 @@ export const DEFAULT_RECIPE: Recipe = {
 };
 
 export function newLayer(film: string, seed = 7): FilmLayer {
-  return { film, filmAmt: 1, grain: 1, glow: 1, vignette: 1, leak: 1, frame: true, seed };
+  return { film, filmAmt: 1, grain: 1, glow: 1, vignette: 1, leak: 1, frame: true, text: true, seed };
 }
 
 const layerOf = (r: Recipe): FilmLayer => ({
@@ -95,6 +99,7 @@ const layerOf = (r: Recipe): FilmLayer => ({
   vignette: r.vignette,
   leak: r.leak,
   frame: r.frame,
+  text: r.text ?? true,
   seed: r.seed,
 });
 
@@ -181,7 +186,8 @@ export function layerFilm(l: FilmLayer): FilmInput | null {
     frame: l.frame,
     seed: l.seed,
   };
-  return { recipe: stock.recipe, controls };
+  const recipe = l.text === false ? { ...stock.recipe, hud: "none" as const, dateStamp: false } : stock.recipe;
+  return { recipe, controls };
 }
 
 /** Recipe → the pipeline's film passes, bottom layer first. */
@@ -234,6 +240,7 @@ export function encodeRecipe(r: Recipe): string {
     if (l.vignette !== 1) p.push("v" + pct(l.vignette));
     if (l.leak !== 1) p.push("l" + pct(l.leak));
     if (!l.frame) p.push("f0");
+    if (l.text === false) p.push("t0");
     p.push("s" + l.seed);
     segs.push(bang("film") + p.join("."));
   }
@@ -297,6 +304,7 @@ export function decodeRecipe(code: string): Recipe | null {
           else if (tag === "v") l.vignette = unpct(v, 1);
           else if (tag === "l") l.leak = unpct(v, 1);
           else if (tag === "f") l.frame = v !== "0";
+          else if (tag === "t") l.text = v !== "0";
           else if (tag === "s" && /^\d+$/.test(v)) l.seed = Number(v);
         }
         films.push(l);

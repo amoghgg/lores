@@ -265,6 +265,19 @@ type NowProps = {
   hasTexture: boolean;
 };
 
+/** What a look writes on the photo, for its on/off tick — null if nothing. */
+function textLabel(hud: string, dateStamp: boolean): string | null {
+  const parts: Record<string, string> = {
+    rec: "REC · NIGHTSHOT · TIMESTAMP",
+    vhs: "PLAY · DATE · TIME",
+    trail: "INFO STRIP (CAM · MOON · TEMP · TIME)",
+    thermal: "TEMPERATURE + CROSSHAIR",
+    witch: "TRIANGLE SYMBOL",
+  };
+  const bits = [parts[hud], dateStamp ? "DATE STAMP" : undefined].filter(Boolean);
+  return bits.length ? bits.join(" · ") : null;
+}
+
 export function Now({ tab, recipe: r, set, films, favorites, onToggleFavorite, hasTexture }: NowProps) {
   const [open, setOpen] = useState(false);
   const live = (patch: Partial<Recipe>) => set(patch, false);
@@ -298,9 +311,19 @@ export function Now({ tab, recipe: r, set, films, favorites, onToggleFavorite, h
           {favorites.includes(s.id) ? "★" : "☆"}
         </button>
       );
+      const writing = textLabel(s.recipe.hud, s.recipe.dateStamp);
+      const textOn = L.text !== false;
       main = (
-        <Range label="STRENGTH" value={L.filmAmt} min={0} max={1} step={0.01} reset={1} format={pct}
-          onChange={(filmAmt) => live({ filmAmt })} onCommit={(filmAmt) => commit({ filmAmt })} />
+        <>
+          <Range label="STRENGTH" value={L.filmAmt} min={0} max={1} step={0.01} reset={1} format={pct}
+            onChange={(filmAmt) => live({ filmAmt })} onCommit={(filmAmt) => commit({ filmAmt })} />
+          {writing && (
+            <label className="now-tick">
+              <input type="checkbox" checked={textOn} onChange={() => commit({ text: !textOn })} />
+              <span>{writing}</span>
+            </label>
+          )}
+        </>
       );
       extra = (
         <>

@@ -1428,6 +1428,24 @@ input[type="range"],
 .layer-main:hover {
   color: rgb(var(--lime));
 }
+.now-tick {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: rgb(var(--ink-800));
+  cursor: pointer;
+  user-select: none;
+}
+.now-tick input {
+  width: 16px;
+  height: 16px;
+  accent-color: rgb(var(--lime));
+  cursor: pointer;
+}
 .layer-active {
   border-color: rgb(var(--lime));
   box-shadow: inset 0 0 0 1px rgb(var(--lime));
