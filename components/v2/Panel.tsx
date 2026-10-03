@@ -45,6 +45,8 @@ export function Tabs({ tab, onTab }: { tab: Tab; onTab: (t: Tab) => void }) {
 
 type LooksProps = {
   tab: Tab;
+  /** Clear the PIXEL-tab stages (size, colours, pattern). */
+  onClearPixel?: () => void;
   recipe: Recipe;
   /** Recipe the thumbnails render from — trails `recipe` while a slider moves. */
   base: Recipe;
@@ -77,8 +79,21 @@ export function Looks(p: LooksProps) {
     const faves = FILM_STOCKS.filter((s) => p.favorites.includes(s.id));
     const cat = p.filmCat === "faves" && !faves.length ? FILM_CATEGORIES[0].id : p.filmCat;
     const list = cat === "faves" ? faves : FILM_STOCKS.filter((s) => s.category === cat);
+    // PIXEL-tab effects sit on top of every film look. Say so, plainly,
+    // with a way out — otherwise a palette silently recolours everything.
+    const pixelBits: string[] = [];
+    if (r.palette !== "none") pixelBits.push(`${PALETTES.find((x) => x.id === r.palette)?.name ?? r.palette} colours`);
+    if (r.block > 1) pixelBits.push(`${r.block}px pixels`);
     return (
       <div className="looks">
+        {pixelBits.length > 0 && p.onClearPixel && (
+          <div className="stack-note" role="status">
+            <span>
+              <b>{pixelBits.join(" + ")}</b> from the PIXEL tab {pixelBits.length > 1 ? "are" : "is"} on top of every look below.
+            </span>
+            <button className="btn-ghost" onClick={p.onClearPixel}>TURN OFF</button>
+          </div>
+        )}
         <div className="chips">
           {faves.length > 0 && (
             <button className={`chip ${cat === "faves" ? "chip-on" : ""}`} onClick={() => p.onFilmCat("faves")}>

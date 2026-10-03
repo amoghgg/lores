@@ -865,6 +865,7 @@ export default function Page() {
             texture={texture}
             onTexture={loadTexture}
             onClearTexture={clearTexture}
+            onClearPixel={() => set({ block: 1, palette: "none", dither: "none" })}
             sound={sound}
           />
           </div>

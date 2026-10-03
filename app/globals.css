@@ -1412,3 +1412,26 @@ input[type="range"],
     height: 38px;
   }
 }
+
+/* "PIXEL effects are stacked on these looks" notice in the FILM tab */
+.stack-note {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 0 16px 10px;
+  padding: 8px 10px;
+  border: 1px solid rgb(var(--lime) / 0.5);
+  background: rgb(var(--lime) / 0.08);
+  font-size: 12.5px;
+  line-height: 1.35;
+  color: rgb(var(--ink-900));
+}
+.stack-note b {
+  color: rgb(var(--lime));
+  font-weight: 700;
+}
+.stack-note .btn-ghost {
+  flex: none;
+  padding: 6px 10px;
+}

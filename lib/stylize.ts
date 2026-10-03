@@ -76,7 +76,9 @@ async function personMask(canvas: HTMLCanvasElement): Promise<Uint8Array | null>
       on++;
     }
   }
-  return on > m.length * 0.005 ? m : null;
+  // A "person" filling nearly the whole frame (drawings, close textures) or
+  // barely any of it isn't a cut-out we can use — fall back to full frame.
+  return on > m.length * 0.005 && on < m.length * 0.85 ? m : null;
 }
 
 // ───────────────────────────────────────────────────────────────────────────
