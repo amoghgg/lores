@@ -8,7 +8,7 @@ Live at **[pixel.amoghbajpai.com](https://pixel.amoghbajpai.com)**.
 
 Pick a look → adjust one slider → **Save**.
 
-- **Three tabs**: FILM (81 looks), PIXEL (size, colours, pattern), MORE (texture, sound).
+- **Three tabs**: FILM (87 looks), PIXEL (size, colours, pattern), MORE (texture, sound).
 - Every option is a live thumbnail of *your* photo; hover on desktop previews it full-size.
 - **Hold the photo** (or `\`) to see the original. **⚄ Surprise** (Space) rolls a new look.
 - Undo / redo, and the session survives a reload (IndexedDB + localStorage).
@@ -35,7 +35,13 @@ Pick a look → adjust one slider → **Save**.
   angel dithers with misregistered plates and torn photocopy frames,
   cutout and gig-poster posterize, 1-bit, soft grunge '14, deep fried and
   CCD digicam (with burned-in REC / PLAY / trail-cam HUDs and real JPEG
-  crunch). One parametric model on the GPU
+  crunch).
+- **PS2 & PAINT**: your photo as a PS2-era low-poly model ("sharp blurriness",
+  after Gao Hang) — person cut out in-browser (MediaPipe selfie segmenter,
+  self-hosted, loaded on first use), colour regions traced into straight
+  polygons, each airbrushed with an edge-clamped blur, on flat red / lime /
+  sky. Plus AIRBRUSH CANVAS (whole frame faceted), STICKER (cut-out, thick
+  outline, cartoon sky) and IMPASTO (Kuwahara + raking light). One parametric model on the GPU
   with a CPU port: channel mixer, 12-band hue control, gray-ramp curves,
   split tone, halation, grain, vignette, leaks, dust, and print borders.
   PHOTO MODE bypasses the pixel stages for a straight film look.

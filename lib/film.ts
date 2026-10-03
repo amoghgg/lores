@@ -125,6 +125,10 @@ export type FilmRecipe = {
   hud: HudKind;
   /** Real JPEG re-encodes after rendering, 0..1 (1 = deep-fried). */
   crunch: number;
+  /** Source restyle before the film pass (lib/stylize.ts). */
+  stylize: "none" | "ps2" | "airbrush" | "sticker" | "impasto";
+  /** Flat background for cut-out restyles. */
+  stylizeBg: string;
 };
 
 export const NEUTRAL: FilmRecipe = {
@@ -186,6 +190,8 @@ export const NEUTRAL: FilmRecipe = {
   sharpen: 0,
   hud: "none",
   crunch: 0,
+  stylize: "none",
+  stylizeBg: "#ec1c1c",
 };
 
 /** User-facing multipliers layered on top of a stock's recipe. */

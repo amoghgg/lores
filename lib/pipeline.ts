@@ -264,6 +264,36 @@ export async function processBest(
   /** Render on the thumbnail GPU instance instead of the main one. */
   target: "main" | "thumb" = "main"
 ): Promise<ProcessResult & { engine: "gpu" | "cpu" }> {
+  // PS2 / airbrush / sticker / impasto restyle the source first; everything
+  // else (grade, grain, pixel stages, texture) then runs on top as usual.
+  let tempSource: ImageBitmap | null = null;
+  if (film && film.recipe.stylize !== "none" && film.controls.amount > 0) {
+    const { stylizedSource } = await import("./stylize");
+    const r = await stylizedSource(
+      source,
+      film.recipe.stylize,
+      film.recipe.stylizeBg,
+      film.controls.amount,
+      film.controls.seed
+    );
+    source = r.bitmap;
+    if (r.owned) tempSource = r.bitmap;
+    film = { ...film, controls: { ...film.controls, amount: 1 } };
+  }
+  try {
+    return await renderBest(source, settings, overlay, film, target);
+  } finally {
+    tempSource?.close();
+  }
+}
+
+async function renderBest(
+  source: HTMLImageElement | ImageBitmap,
+  settings: Settings,
+  overlay: OverlayInput | null | undefined,
+  film: FilmInput | null | undefined,
+  target: "main" | "thumb"
+): Promise<ProcessResult & { engine: "gpu" | "cpu" }> {
   const { needsCpuGrid, getWebGPU, getThumbGPU } = await import("./gpu/webgpu");
   {
     const gpu = await (target === "thumb" ? getThumbGPU() : getWebGPU());
