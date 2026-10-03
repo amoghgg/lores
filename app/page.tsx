@@ -26,8 +26,12 @@ import {
   encodeRecipe,
   sameRecipe,
   shuffleRecipe,
-  toFilm,
+  filmLayers,
+  patchLayer,
+  removeLayer,
+  toFilms,
   toOverlayOpts,
+  type FilmLayer,
   toSettings,
   type Recipe,
 } from "@/lib/recipe";
@@ -127,6 +131,48 @@ export default function Page() {
     [apply]
   );
 
+  // ─── Film stack: any number of looks, each its own layer ─────────────
+  // `filmLayer` is the selected layer: tapping a look swaps it, ＋ adds a new
+  // one on top, the Now panel edits it.
+  const [filmLayerRaw, setFilmLayer] = useState(0);
+  const filmCount = filmLayers(recipe).length;
+  const filmLayer = Math.max(0, Math.min(filmLayerRaw, filmCount - 1));
+  const filmLayerRef = useRef(filmLayer);
+  filmLayerRef.current = filmLayer;
+  const removeFilm = useCallback(
+    (i: number) => {
+      apply(removeLayer({ ...recipeRef.current, off: {} }, i));
+      const at = filmLayerRef.current;
+      setFilmLayer(i < at ? at - 1 : Math.max(0, Math.min(at, filmLayers(recipeRef.current).length - 2)));
+    },
+    [apply]
+  );
+  const pickFilm = useCallback(
+    (id: string) => {
+      if (id === "none") return removeFilm(filmLayerRef.current);
+      apply(patchLayer({ ...recipeRef.current, off: {} }, filmLayerRef.current, { film: id }));
+    },
+    [apply, removeFilm]
+  );
+  const addFilm = useCallback(
+    (id: string) => {
+      const n = filmLayers(recipeRef.current).length;
+      const next = patchLayer({ ...recipeRef.current, off: {} }, n, { film: id });
+      apply(next);
+      setFilmLayer(filmLayers(next).length - 1);
+    },
+    [apply]
+  );
+  const patchFilm = useCallback(
+    (patch: Partial<FilmLayer>, commit = true) =>
+      apply(patchLayer({ ...recipeRef.current, off: {} }, filmLayerRef.current, patch), commit),
+    [apply]
+  );
+  const filmOps = useMemo(
+    () => ({ layer: filmLayer, pick: pickFilm, add: addFilm, patch: patchFilm }),
+    [filmLayer, pickFilm, addFilm, patchFilm]
+  );
+
   const undo = useCallback(() => {
     const prev = past.current.pop();
     if (!prev) return;
@@ -200,7 +246,7 @@ export default function Page() {
     [shown, texture]
   );
   const settings = useMemo(() => toSettings(shown), [shown]);
-  const film = useMemo(() => toFilm(shown), [shown]);
+  const film = useMemo(() => toFilms(shown), [shown]);
 
   // ─── Sound (live mode) ───────────────────────────────────────────────
   const [vizMode, setVizMode] = useState<VizMode>("off");
@@ -296,7 +342,7 @@ export default function Page() {
               fft: frame.fft,
             },
             overlay: ov ? { blendMode: ov.blendBit, fitMode: ov.fitBit, opacity: ov.opacity } : undefined,
-            film: filmRef.current ? { ...filmRef.current, time: frame.time } : null,
+            film: filmRef.current.map((f) => ({ ...f, time: frame.time })),
             bitmapAlreadyOwned: true,
           });
         } catch (err) {
@@ -553,9 +599,9 @@ export default function Page() {
       const r = recipeRef.current;
       if (tab === "film") {
         const list = ["none", ...FILM_STOCKS.map((s) => s.id)];
-        const i = list.indexOf(r.film);
+        const i = list.indexOf(filmLayers(r)[filmLayerRef.current]?.film ?? "none");
         const id = list[(i + dir + list.length) % list.length];
-        set({ film: id });
+        pickFilm(id);
         const s = getStock(id);
         if (s) setFilmCat(s.category);
         say(s ? s.name : "NO FILM", 900);
@@ -566,7 +612,7 @@ export default function Page() {
         say(b === 1 ? "NO PIXELS" : `${b}PX`, 900);
       }
     },
-    [tab, set, say]
+    [tab, set, say, pickFilm]
   );
 
   // ─── Keyboard (all optional — nothing on screen depends on it) ────────
@@ -626,7 +672,10 @@ export default function Page() {
           setTab("more");
           break;
         case "f":
-          if (recipeRef.current.film !== "none") toggleFavorite(recipeRef.current.film);
+          {
+            const l = filmLayers(recipeRef.current)[filmLayerRef.current];
+            if (l) toggleFavorite(l.film);
+          }
           break;
         case "o":
           openPicker();
@@ -722,7 +771,7 @@ export default function Page() {
         group: "FILM",
         hint: s.hint,
         run: () => {
-          set({ film: s.id });
+          pickFilm(s.id);
           setTab("film");
           setFilmCat(s.category);
         },
@@ -739,7 +788,7 @@ export default function Page() {
     }
     return c;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [set, surprise, undo, redo, apply]);
+  }, [set, surprise, undo, redo, apply, pickFilm]);
 
   const epoch = `${source?.id ?? ""}|${texture?.id ?? ""}`;
   const crisp = isPixelArt(shown);
@@ -814,6 +863,10 @@ export default function Page() {
               recipe={recipe}
               hasTexture={!!texture}
               set={(patch) => set(patch)}
+              filmLayer={filmLayer}
+              onFilmLayer={setFilmLayer}
+              onRemoveFilm={removeFilm}
+              filmTab={tab === "film"}
               onClearTexture={clearTexture}
               onOpen={setTab}
             />
@@ -848,6 +901,7 @@ export default function Page() {
             tab={tab}
             recipe={recipe}
             set={set}
+            films={filmOps}
             favorites={favorites}
             onToggleFavorite={toggleFavorite}
             hasTexture={!!texture}
@@ -858,6 +912,7 @@ export default function Page() {
             base={thumbBase}
             epoch={epoch}
             set={set}
+            films={filmOps}
             onPreview={setPreview}
             favorites={favorites}
             filmCat={filmCat}

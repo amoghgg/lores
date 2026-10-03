@@ -12,7 +12,7 @@ import { processBest } from "./pipeline";
 import {
   encodeRecipe,
   toSettings,
-  toFilm,
+  toFilms,
   toOverlayOpts,
   type Recipe,
 } from "./recipe";
@@ -126,16 +126,26 @@ class ThumbRenderer {
    */
   private async styledProxy(recipe: Recipe, view: ThumbView, size: number) {
     const src = this.source;
-    const film = toFilm(recipe);
-    if (!src || !film || film.recipe.stylize === "none" || film.controls.amount <= 0) return null;
+    const films = toFilms(recipe).filter((f) => f.controls.amount > 0);
+    const styled = films.filter((f) => f.recipe.stylize !== "none");
+    if (!src || !styled.length) return null;
     const { stylizedSource } = await import("./stylize");
-    const r = film.recipe;
-    const key = `${view}${size}|${r.stylize}|${r.stylizeBg}|${film.controls.amount.toFixed(2)}`;
+    const key =
+      `${view}${size}|` +
+      styled.map((f) => `${f.recipe.stylize}.${f.recipe.stylizeBg}.${f.controls.amount.toFixed(2)}`).join("+");
     let bmp = this.proxies.get(key);
     if (!bmp) {
-      const st = await stylizedSource(src, r.stylize, r.stylizeBg, film.controls.amount, film.controls.seed);
-      bmp = await makeProxy(st.bitmap, view, size);
-      if (st.owned) st.bitmap.close();
+      // Restyles chain in stack order, each on the previous one's result.
+      let cur: ImageBitmap = src;
+      let owned: ImageBitmap | null = null;
+      for (const f of styled) {
+        const st = await stylizedSource(cur, f.recipe.stylize, f.recipe.stylizeBg, f.controls.amount, f.controls.seed);
+        owned?.close();
+        owned = st.owned ? st.bitmap : null;
+        cur = st.bitmap;
+      }
+      bmp = await makeProxy(cur, view, size);
+      owned?.close();
       if (this.source !== src) {
         bmp.close();
         return null;
@@ -144,7 +154,11 @@ class ThumbRenderer {
     }
     return {
       bitmap: bmp,
-      film: { ...film, recipe: { ...r, stylize: "none" as const }, controls: { ...film.controls, amount: 1 } },
+      film: films.map((f) =>
+        f.recipe.stylize === "none"
+          ? f
+          : { ...f, recipe: { ...f.recipe, stylize: "none" as const }, controls: { ...f.controls, amount: 1 } }
+      ),
     };
   }
 
@@ -170,7 +184,7 @@ class ThumbRenderer {
           job.resolve(null);
           continue;
         }
-        const film = styled ? styled.film : toFilm(job.recipe);
+        const film = styled ? styled.film : toFilms(job.recipe);
         const settings = toSettings(job.recipe);
         if (job.view === "fit") {
           // Keep the look proportional: an 8px block on a 1600px photo is a

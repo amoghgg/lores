@@ -1262,6 +1262,9 @@ export class WebGPUPipeline {
   private pipelineVizFxToCanvas!: GPURenderPipeline;
   private pipelineFilm!: GPURenderPipeline;
   private bufFilm: GPUBuffer;
+  /** One uniform buffer per stacked film layer — writes before a single
+   *  submit would otherwise all land on the same buffer. */
+  private bufFilms: GPUBuffer[] = [];
   private bufVizFx: GPUBuffer;
   private bufFFT: GPUBuffer;
   private configuredCanvases = new WeakMap<HTMLCanvasElement, GPUCanvasContext>();
@@ -1822,7 +1825,7 @@ export class WebGPUPipeline {
       outCanvas?: HTMLCanvasElement;
       viz?: VizParams;
       overlay?: OverlayParams;
-      film?: FilmParams | null;
+      film?: FilmParams | FilmParams[] | null;
       /**
        * Palette + dither already done on the CPU (error-diffusion dithers) at
        * the working resolution — grid size when pixelating, else full size.
@@ -2145,10 +2148,22 @@ export class WebGPUPipeline {
     // ─── 4. FILM ─────────────────────────────────────────────────────────
     // Stock / camera / print emulation on top of the pixel-art result. With
     // block size 1 and palette ORIGINAL this is a plain photo film look.
-    const film = options?.film;
-    if (film && film.controls.amount > 0) {
+    const filmIn = options?.film;
+    const films = (filmIn ? (Array.isArray(filmIn) ? filmIn : [filmIn]) : []).filter(
+      (f) => f.controls.amount > 0
+    );
+    for (let i = 0; i < films.length; i++) {
+      const film = films[i];
+      if (i === 0) this.bufFilms[0] = this.bufFilm;
+      if (!this.bufFilms[i]) {
+        this.bufFilms[i] = this.device.createBuffer({
+          size: FILM_UNIFORM_BYTES,
+          usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+        });
+      }
+      const buf = this.bufFilms[i];
       this.device.queue.writeBuffer(
-        this.bufFilm,
+        buf,
         0,
         packFilmUniform(film.recipe, film.controls, w, h, film.time ?? 0)
       );
@@ -2157,7 +2172,7 @@ export class WebGPUPipeline {
         entries: [
           { binding: 0, resource: this.samplerClamp },
           { binding: 1, resource: currentTex.createView() },
-          { binding: 2, resource: { buffer: this.bufFilm } },
+          { binding: 2, resource: { buffer: buf } },
         ],
       });
       // The dither stipple path can leave nextTex === a live input; pick a

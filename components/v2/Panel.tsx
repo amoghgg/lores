@@ -5,10 +5,32 @@ import { Thumb } from "./Thumb";
 import { Range } from "./Range";
 import { PALETTES } from "@/lib/palettes";
 import { FILM_CATEGORIES, FILM_STOCKS, getStock } from "@/lib/filmStocks";
-import { BLENDS, BLOCKS, DITHERS, describeRecipe, type Recipe } from "@/lib/recipe";
+import {
+  BLENDS,
+  BLOCKS,
+  DITHERS,
+  MAX_FILMS,
+  describeRecipe,
+  filmLayers,
+  patchLayer,
+  removeLayer,
+  type FilmLayer,
+  type Recipe,
+} from "@/lib/recipe";
 
 export type Tab = "film" | "pixel" | "more";
 export type SetRecipe = (patch: Partial<Recipe>, commit?: boolean) => void;
+
+/** The film stack, as the panel edits it. `layer` is the selected layer. */
+export type FilmOps = {
+  layer: number;
+  /** Swap the selected layer's look ("none" removes the layer). */
+  pick: (id: string) => void;
+  /** Add a look on top of the stack and select it. */
+  add: (id: string) => void;
+  /** Change the selected layer's controls. */
+  patch: (patch: Partial<FilmLayer>, commit?: boolean) => void;
+};
 
 const pct = (v: number) => `${Math.round(v * 100)}%`;
 
@@ -52,6 +74,7 @@ type LooksProps = {
   base: Recipe;
   epoch: string;
   set: SetRecipe;
+  films: FilmOps;
   onPreview: (r: Recipe | null) => void;
   favorites: string[];
   filmCat: string;
@@ -74,11 +97,19 @@ export function Looks(p: LooksProps) {
     const next = { ...p.base, ...patch, off: {} };
     return { recipe: next, epoch, onHover: (on: boolean) => hover(on ? next : null) };
   };
+  // Film thumbs show the stack with the selected layer swapped for that look.
+  const ft = (id: string) => {
+    const b = { ...p.base, off: {} };
+    const next = id === "none" ? removeLayer(b, p.films.layer) : patchLayer(b, p.films.layer, { film: id });
+    return { recipe: next, epoch, onHover: (on: boolean) => hover(on ? next : null) };
+  };
 
   if (p.tab === "film") {
     const faves = FILM_STOCKS.filter((s) => p.favorites.includes(s.id));
     const cat = p.filmCat === "faves" && !faves.length ? FILM_CATEGORIES[0].id : p.filmCat;
     const list = cat === "faves" ? faves : FILM_STOCKS.filter((s) => s.category === cat);
+    const stack = filmLayers(r);
+    const active = stack[p.films.layer] as FilmLayer | undefined;
     // PIXEL-tab effects sit on top of every film look. Say so, plainly,
     // with a way out — otherwise a palette silently recolours everything.
     const pixelBits: string[] = [];
@@ -107,17 +138,22 @@ export function Looks(p: LooksProps) {
           ))}
         </div>
         <div className="strip strip-grid">
-          <Thumb {...t({ film: "none" })} label="NONE" selected={r.film === "none"} onSelect={() => set({ film: "none" })} />
-          {list.map((s) => (
-            <Thumb
-              key={s.id}
-              {...t({ film: s.id })}
-              label={s.name}
-              starred={p.favorites.includes(s.id)}
-              selected={r.film === s.id}
-              onSelect={() => set({ film: s.id })}
-            />
-          ))}
+          <Thumb {...ft("none")} label="NONE" selected={!active} onSelect={() => p.films.pick("none")} />
+          {list.map((s) => {
+            const at = stack.flatMap((l, i) => (l.film === s.id ? [i + 1] : []));
+            return (
+              <Thumb
+                key={s.id}
+                {...ft(s.id)}
+                label={s.name}
+                starred={p.favorites.includes(s.id)}
+                selected={active?.film === s.id}
+                badge={stack.length > 1 && at.length ? at.join("·") : undefined}
+                onSelect={() => p.films.pick(s.id)}
+                onAdd={stack.length && stack.length < MAX_FILMS ? () => p.films.add(s.id) : undefined}
+              />
+            );
+          })}
         </div>
       </div>
     );
@@ -223,12 +259,13 @@ type NowProps = {
   tab: Tab;
   recipe: Recipe;
   set: SetRecipe;
+  films: FilmOps;
   favorites: string[];
   onToggleFavorite: (id: string) => void;
   hasTexture: boolean;
 };
 
-export function Now({ tab, recipe: r, set, favorites, onToggleFavorite, hasTexture }: NowProps) {
+export function Now({ tab, recipe: r, set, films, favorites, onToggleFavorite, hasTexture }: NowProps) {
   const [open, setOpen] = useState(false);
   const live = (patch: Partial<Recipe>) => set(patch, false);
   const commit = (patch: Partial<Recipe>) => set(patch, true);
@@ -240,10 +277,18 @@ export function Now({ tab, recipe: r, set, favorites, onToggleFavorite, hasTextu
   let star: React.ReactNode = null;
 
   if (tab === "film") {
-    const s = getStock(r.film);
-    title = s ? s.name : "NO FILM";
-    sub = s ? s.meta : "Pick a look below";
-    if (s) {
+    const stack = filmLayers(r);
+    const L = stack[films.layer] as FilmLayer | undefined;
+    const s = L ? getStock(L.film) : undefined;
+    const live = (patch: Partial<FilmLayer>) => films.patch(patch, false);
+    const commit = (patch: Partial<FilmLayer>) => films.patch(patch, true);
+    title = s ? (stack.length > 1 ? `${films.layer + 1}. ${s.name}` : s.name) : "NO FILM";
+    sub = s
+      ? stack.length > 1
+        ? `Layer ${films.layer + 1} of ${stack.length} · tap a look to swap it, ＋ to add one`
+        : `${s.meta} · ＋ on a look stacks it on top`
+      : "Pick a look below";
+    if (s && L) {
       star = (
         <button
           className={`now-star ${favorites.includes(s.id) ? "text-lime" : ""}`}
@@ -254,27 +299,27 @@ export function Now({ tab, recipe: r, set, favorites, onToggleFavorite, hasTextu
         </button>
       );
       main = (
-        <Range label="STRENGTH" value={r.filmAmt} min={0} max={1} step={0.01} reset={1} format={pct}
+        <Range label="STRENGTH" value={L.filmAmt} min={0} max={1} step={0.01} reset={1} format={pct}
           onChange={(filmAmt) => live({ filmAmt })} onCommit={(filmAmt) => commit({ filmAmt })} />
       );
       extra = (
         <>
           <p className="now-note">{s.note}</p>
-          <Range label="GRAIN" value={r.grain} min={0} max={2} step={0.01} reset={1} format={pct}
+          <Range label="GRAIN" value={L.grain} min={0} max={2} step={0.01} reset={1} format={pct}
             onChange={(grain) => live({ grain })} onCommit={(grain) => commit({ grain })} />
-          <Range label="GLOW" value={r.glow} min={0} max={2} step={0.01} reset={1} format={pct}
+          <Range label="GLOW" value={L.glow} min={0} max={2} step={0.01} reset={1} format={pct}
             onChange={(glow) => live({ glow })} onCommit={(glow) => commit({ glow })} />
-          <Range label="VIGNETTE" value={r.vignette} min={0} max={2} step={0.01} reset={1} format={pct}
+          <Range label="VIGNETTE" value={L.vignette} min={0} max={2} step={0.01} reset={1} format={pct}
             onChange={(vignette) => live({ vignette })} onCommit={(vignette) => commit({ vignette })} />
-          <Range label="LIGHT LEAK" value={r.leak} min={0} max={2} step={0.01} reset={1} format={pct}
+          <Range label="LIGHT LEAK" value={L.leak} min={0} max={2} step={0.01} reset={1} format={pct}
             onChange={(leak) => live({ leak })} onCommit={(leak) => commit({ leak })} />
           <div className="now-buttons">
             {s.recipe.border !== "none" && (
-              <button className={`btn-ghost ${r.frame ? "btn-on" : ""}`} onClick={() => commit({ frame: !r.frame })}>
-                {r.frame ? "■" : "□"} FRAME
+              <button className={`btn-ghost ${L.frame ? "btn-on" : ""}`} onClick={() => commit({ frame: !L.frame })}>
+                {L.frame ? "■" : "□"} FRAME
               </button>
             )}
-            <button className="btn-ghost" onClick={() => commit({ seed: (r.seed * 7919 + 13) % 9973 })}>
+            <button className="btn-ghost" onClick={() => commit({ seed: (L.seed * 7919 + 13) % 9973 })}>
               ⟲ NEW GRAIN
             </button>
           </div>
@@ -282,7 +327,7 @@ export function Now({ tab, recipe: r, set, favorites, onToggleFavorite, hasTextu
       );
     }
   } else if (tab === "pixel") {
-    const d = describeRecipe({ ...r, film: "none" });
+    const d = describeRecipe({ ...r, film: "none", stack: [] });
     title = d === "ORIGINAL" ? "NO PIXEL EFFECT" : d;
     sub = r.block > 1 ? "Drag SIZE for bigger or smaller pixels" : "Pick a size, colours or pattern below";
     // One slider per effect, always in view — no digging under ADJUST.

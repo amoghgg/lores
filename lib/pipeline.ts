@@ -157,7 +157,7 @@ export function process(
   source: HTMLImageElement | ImageBitmap,
   settings: Settings,
   overlay?: OverlayInput | null,
-  film?: FilmInput | null
+  film?: FilmInput | FilmInput[] | null
 ): ProcessResult {
   const t0 = performance.now();
   const { w, h, canvas: work, ctx, data } = readSource(source);
@@ -178,9 +178,7 @@ export function process(
   }
 
   // 4. Film — stock / camera / print emulation over the pixel-art result.
-  if (film && film.controls.amount > 0) {
-    applyFilmCPU(ctx, w, h, film.recipe, film.controls);
-  }
+  for (const f of asFilms(film)) applyFilmCPU(ctx, w, h, f.recipe, f.controls);
 
   // 5. Texture overlay — apply via Canvas 2D's globalCompositeOperation, which
   // maps 1:1 to the Photoshop blend names exposed in the UI.
@@ -260,38 +258,51 @@ export async function processBest(
   source: HTMLImageElement | ImageBitmap,
   settings: Settings,
   overlay?: OverlayInput | null,
-  film?: FilmInput | null,
+  film?: FilmInput | FilmInput[] | null,
   /** Render on the thumbnail GPU instance instead of the main one. */
   target: "main" | "thumb" = "main"
 ): Promise<ProcessResult & { engine: "gpu" | "cpu" }> {
-  // PS2 / airbrush / sticker / impasto restyle the source first; everything
-  // else (grade, grain, pixel stages, texture) then runs on top as usual.
-  let tempSource: ImageBitmap | null = null;
-  if (film && film.recipe.stylize !== "none" && film.controls.amount > 0) {
+  // PS2 / airbrush / sticker / impasto restyle the source first (in stack
+  // order); every grade, grain, pixel stage and texture then runs on top.
+  const temps: ImageBitmap[] = [];
+  let films = asFilms(film);
+  if (films.some((f) => f.recipe.stylize !== "none")) {
     const { stylizedSource } = await import("./stylize");
-    const r = await stylizedSource(
-      source,
-      film.recipe.stylize,
-      film.recipe.stylizeBg,
-      film.controls.amount,
-      film.controls.seed
-    );
-    source = r.bitmap;
-    if (r.owned) tempSource = r.bitmap;
-    film = { ...film, controls: { ...film.controls, amount: 1 } };
+    const out: FilmInput[] = [];
+    for (const f of films) {
+      if (f.recipe.stylize === "none") {
+        out.push(f);
+        continue;
+      }
+      const r = await stylizedSource(source, f.recipe.stylize, f.recipe.stylizeBg, f.controls.amount, f.controls.seed);
+      source = r.bitmap;
+      if (r.owned) temps.push(r.bitmap);
+      out.push({ ...f, controls: { ...f.controls, amount: 1 } });
+    }
+    films = out;
   }
   try {
-    return await renderBest(source, settings, overlay, film, target);
+    return await renderBest(source, settings, overlay, films, target);
   } finally {
-    tempSource?.close();
+    for (const t of temps) t.close();
   }
+}
+
+/** Live film layers only — null, single and stacked inputs all normalise here. */
+export function asFilms(film: FilmInput | FilmInput[] | null | undefined): FilmInput[] {
+  if (!film) return [];
+  return (Array.isArray(film) ? film : [film]).filter((f) => f.controls.amount > 0);
+}
+
+async function runPost(canvas: HTMLCanvasElement, films: FilmInput[]) {
+  for (const f of films) if (needsPost(f.recipe)) await postFilm(canvas, f.recipe, f.controls.seed);
 }
 
 async function renderBest(
   source: HTMLImageElement | ImageBitmap,
   settings: Settings,
   overlay: OverlayInput | null | undefined,
-  film: FilmInput | null | undefined,
+  films: FilmInput[],
   target: "main" | "thumb"
 ): Promise<ProcessResult & { engine: "gpu" | "cpu" }> {
   const { needsCpuGrid, getWebGPU, getThumbGPU } = await import("./gpu/webgpu");
@@ -317,7 +328,7 @@ async function renderBest(
                 opacity: overlay.opacity,
               }
             : undefined,
-          film,
+          film: films,
           cpuGrid,
           // Static path → texture readback to a real 2D canvas. Side-steps
           // every WebGPU compositor / first-frame timing issue, so what you
@@ -325,19 +336,15 @@ async function renderBest(
           readback: true,
         });
         cpuGrid?.close();
-        if (film && film.controls.amount > 0 && needsPost(film.recipe)) {
-          await postFilm(r.canvas, film.recipe, film.controls.seed);
-        }
+        await runPost(r.canvas, films);
         return { ...r, engine: "gpu" };
       } catch (err) {
         console.warn("[pixel] GPU pipeline failed, falling back to CPU:", err);
       }
     }
   }
-  const r = process(source, settings, overlay, film);
-  if (film && film.controls.amount > 0 && needsPost(film.recipe)) {
-    await postFilm(r.canvas, film.recipe, film.controls.seed);
-  }
+  const r = process(source, settings, overlay, films);
+  await runPost(r.canvas, films);
   return { ...r, engine: "cpu" };
 }
 

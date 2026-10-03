@@ -18,6 +18,10 @@ type Props = {
   group?: string;
   onSelect: () => void;
   onHover?: (on: boolean) => void;
+  /** Shows a ＋ corner button: add this look as another layer. */
+  onAdd?: () => void;
+  /** Positions of this look in the film stack (1-based), shown as a badge. */
+  badge?: string;
   className?: string;
   aspect?: string;
 };
@@ -38,6 +42,8 @@ export function Thumb({
   group = "sheet",
   onSelect,
   onHover,
+  onAdd,
+  badge,
   className = "",
   aspect,
 }: Props) {
@@ -97,6 +103,28 @@ export function Thumb({
       title={sub ? `${label} — ${sub}` : label}
     >
       <div ref={holder} className={`thumb-img ${ready ? "" : "thumb-wait"}`} />
+      {badge && <span className="thumb-badge">{badge}</span>}
+      {onAdd && (
+        <span
+          role="button"
+          tabIndex={0}
+          className="thumb-plus"
+          aria-label={`Add ${label} as another layer`}
+          title="Add as another layer"
+          onClick={(e) => {
+            e.stopPropagation();
+            onAdd();
+          }}
+          onKeyDown={(e) => {
+            if (e.key !== "Enter" && e.key !== " ") return;
+            e.preventDefault();
+            e.stopPropagation();
+            onAdd();
+          }}
+        >
+          +
+        </span>
+      )}
       <span className="thumb-cap">
         <span className="thumb-name">
           {starred && <span className="text-lime mr-1">★</span>}

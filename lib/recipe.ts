@@ -40,9 +40,26 @@ export type Recipe = {
   texBlend: BlendName;
   texFit: FitName;
   texOpacity: number; // 0..1
+  /** Further film layers stacked on top of the one above, in order. */
+  stack: FilmLayer[];
   /** Bypassed (stomped-off) steps keep their settings but don't render. */
   off: Partial<Record<StepId, boolean>>;
 };
+
+/** One film look in the stack, with its own strength and controls. */
+export type FilmLayer = {
+  film: string;
+  filmAmt: number;
+  grain: number;
+  glow: number;
+  vignette: number;
+  leak: number;
+  frame: boolean;
+  seed: number;
+};
+
+/** Most film layers a recipe keeps — past this a look is mud anyway. */
+export const MAX_FILMS = 8;
 
 export const DEFAULT_RECIPE: Recipe = {
   block: 1,
@@ -62,8 +79,51 @@ export const DEFAULT_RECIPE: Recipe = {
   texBlend: "multiply",
   texFit: "cover",
   texOpacity: 0.6,
+  stack: [],
   off: {},
 };
+
+export function newLayer(film: string, seed = 7): FilmLayer {
+  return { film, filmAmt: 1, grain: 1, glow: 1, vignette: 1, leak: 1, frame: true, seed };
+}
+
+const layerOf = (r: Recipe): FilmLayer => ({
+  film: r.film,
+  filmAmt: r.filmAmt,
+  grain: r.grain,
+  glow: r.glow,
+  vignette: r.vignette,
+  leak: r.leak,
+  frame: r.frame,
+  seed: r.seed,
+});
+
+/** Every film layer in order (bottom first). Empty when there is no look. */
+export function filmLayers(r: Recipe): FilmLayer[] {
+  const all = [layerOf(r), ...(r.stack ?? [])];
+  return all.filter((l) => l.film !== "none");
+}
+
+/** Recipe with its film stack replaced by `layers` (bottom first). */
+export function withLayers(r: Recipe, layers: FilmLayer[]): Recipe {
+  const ls = layers.filter((l) => l.film !== "none").slice(0, MAX_FILMS);
+  const [first = { ...layerOf(r), film: "none" }, ...rest] = ls;
+  return { ...r, ...first, stack: rest };
+}
+
+/** Patch one layer; index past the end appends (used to add a look). */
+export function patchLayer(r: Recipe, i: number, patch: Partial<FilmLayer>): Recipe {
+  const ls = filmLayers(r);
+  if (i >= ls.length) {
+    if (!patch.film || patch.film === "none") return r;
+    return withLayers(r, [...ls, { ...newLayer(patch.film, 1 + ((r.seed * 31 + ls.length * 977) % 9000)), ...patch }]);
+  }
+  return withLayers(r, ls.map((l, j) => (j === i ? { ...l, ...patch } : l)));
+}
+
+export function removeLayer(r: Recipe, i: number): Recipe {
+  return withLayers(r, filmLayers(r).filter((_, j) => j !== i));
+}
 
 export const DITHERS: { id: DitherMode; name: string; hint: string }[] = [
   { id: "none", name: "NONE", hint: "flat quantize" },
@@ -108,21 +168,28 @@ export function toSettings(r: Recipe): Settings {
   };
 }
 
-export function toFilm(r: Recipe): FilmInput | null {
-  if (!isOn(r, "film")) return null;
-  const stock = getStock(r.film);
+export function layerFilm(l: FilmLayer): FilmInput | null {
+  const stock = getStock(l.film);
   if (!stock) return null;
   const controls: FilmControls = {
     ...DEFAULT_CONTROLS,
-    amount: r.filmAmt,
-    grain: r.grain,
-    glow: r.glow,
-    vignette: r.vignette,
-    leak: r.leak,
-    frame: r.frame,
-    seed: r.seed,
+    amount: l.filmAmt,
+    grain: l.grain,
+    glow: l.glow,
+    vignette: l.vignette,
+    leak: l.leak,
+    frame: l.frame,
+    seed: l.seed,
   };
   return { recipe: stock.recipe, controls };
+}
+
+/** Recipe → the pipeline's film passes, bottom layer first. */
+export function toFilms(r: Recipe): FilmInput[] {
+  if (!isOn(r, "film")) return [];
+  return filmLayers(r)
+    .map(layerFilm)
+    .filter((f): f is FilmInput => !!f);
 }
 
 export function toOverlayOpts(
@@ -159,15 +226,15 @@ export function encodeRecipe(r: Recipe): string {
   if (r.block > 1) segs.push(`${bang("pixel")}px:${r.block}${r.pixelAmt < 1 ? "." + pct(r.pixelAmt) : ""}`);
   if (r.palette !== "none") segs.push(`${bang("palette")}pal:${r.palette}${r.paletteAmt < 1 ? "." + pct(r.paletteAmt) : ""}`);
   if (r.dither !== "none") segs.push(`${bang("dither")}dt:${r.dither}${r.ditherAmt < 1 ? "." + pct(r.ditherAmt) : ""}`);
-  if (r.film !== "none") {
-    const p = [`film:${r.film}`];
-    if (r.filmAmt !== 1) p.push(pct(r.filmAmt));
-    if (r.grain !== 1) p.push("g" + pct(r.grain));
-    if (r.glow !== 1) p.push("h" + pct(r.glow));
-    if (r.vignette !== 1) p.push("v" + pct(r.vignette));
-    if (r.leak !== 1) p.push("l" + pct(r.leak));
-    if (!r.frame) p.push("f0");
-    p.push("s" + r.seed);
+  for (const l of filmLayers(r)) {
+    const p = [`film:${l.film}`];
+    if (l.filmAmt !== 1) p.push(pct(l.filmAmt));
+    if (l.grain !== 1) p.push("g" + pct(l.grain));
+    if (l.glow !== 1) p.push("h" + pct(l.glow));
+    if (l.vignette !== 1) p.push("v" + pct(l.vignette));
+    if (l.leak !== 1) p.push("l" + pct(l.leak));
+    if (!l.frame) p.push("f0");
+    p.push("s" + l.seed);
     segs.push(bang("film") + p.join("."));
   }
   if (
@@ -191,8 +258,10 @@ export function decodeRecipe(code: string): Recipe | null {
     palette: "none",
     dither: "none",
     film: "none",
+    stack: [],
     off: {},
   };
+  const films: FilmLayer[] = [];
   for (const raw of segs.slice(1)) {
     const off = raw.startsWith("!");
     const seg = off ? raw.slice(1) : raw;
@@ -216,21 +285,24 @@ export function decodeRecipe(code: string): Recipe | null {
         r.ditherAmt = Math.min(1, unpct(parts[1], 1));
         if (off) r.off.dither = true;
         break;
-      case "film":
-        if (getStock(parts[0])) r.film = parts[0];
+      case "film": {
+        if (!getStock(parts[0])) break;
+        const l = newLayer(parts[0]);
         for (const p of parts.slice(1)) {
           const tag = p[0];
           const v = p.slice(1);
-          if (/^\d+$/.test(p)) r.filmAmt = Math.min(1, unpct(p, 1));
-          else if (tag === "g") r.grain = unpct(v, 1);
-          else if (tag === "h") r.glow = unpct(v, 1);
-          else if (tag === "v") r.vignette = unpct(v, 1);
-          else if (tag === "l") r.leak = unpct(v, 1);
-          else if (tag === "f") r.frame = v !== "0";
-          else if (tag === "s" && /^\d+$/.test(v)) r.seed = Number(v);
+          if (/^\d+$/.test(p)) l.filmAmt = Math.min(1, unpct(p, 1));
+          else if (tag === "g") l.grain = unpct(v, 1);
+          else if (tag === "h") l.glow = unpct(v, 1);
+          else if (tag === "v") l.vignette = unpct(v, 1);
+          else if (tag === "l") l.leak = unpct(v, 1);
+          else if (tag === "f") l.frame = v !== "0";
+          else if (tag === "s" && /^\d+$/.test(v)) l.seed = Number(v);
         }
+        films.push(l);
         if (off) r.off.film = true;
         break;
+      }
       case "tx":
         if (BLENDS.some((b) => b.id === parts[0])) r.texBlend = parts[0] as BlendName;
         if (["cover", "tile", "fit"].includes(parts[1])) r.texFit = parts[1] as FitName;
@@ -239,13 +311,13 @@ export function decodeRecipe(code: string): Recipe | null {
         break;
     }
   }
-  return r;
+  return withLayers(r, films);
 }
 
 /** Human caption for a recipe — used on contact-sheet frames and toasts. */
 export function describeRecipe(r: Recipe): string {
   const bits: string[] = [];
-  if (isOn(r, "film") && r.film !== "none") bits.push(getStock(r.film)?.name ?? r.film);
+  if (isOn(r, "film")) for (const l of filmLayers(r)) bits.push(getStock(l.film)?.name ?? l.film);
   if (isOn(r, "palette") && r.palette !== "none")
     bits.push(PALETTES.find((p) => p.id === r.palette)?.name ?? r.palette);
   if (isOn(r, "dither") && r.dither !== "none" && r.palette !== "none")
@@ -292,6 +364,7 @@ export function shuffleRecipe(base: Recipe, locks: Locks, seed: number): Recipe 
     r.vignette = 1;
     r.leak = 1;
     r.seed = 1 + Math.floor(rand() * 9000);
+    r.stack = [];
     r.off.film = false;
   }
   if (!locks.pixel) {

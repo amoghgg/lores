@@ -2,10 +2,18 @@
 
 import { PALETTES } from "@/lib/palettes";
 import { getStock } from "@/lib/filmStocks";
-import { BLENDS, DITHERS, type Recipe } from "@/lib/recipe";
+import { BLENDS, DITHERS, filmLayers, type Recipe } from "@/lib/recipe";
 import type { Tab } from "./Panel";
 
-type Layer = { key: string; kind: string; label: string; tab: Tab; remove: () => void };
+type Layer = {
+  key: string;
+  kind: string;
+  label: string;
+  tab: Tab;
+  remove: () => void;
+  open?: () => void;
+  active?: boolean;
+};
 
 type Props = {
   recipe: Recipe;
@@ -13,13 +21,29 @@ type Props = {
   set: (patch: Partial<Recipe>) => void;
   onClearTexture: () => void;
   onOpen: (tab: Tab) => void;
+  /** Selected film layer, and how to select / remove one. */
+  filmLayer: number;
+  onFilmLayer: (i: number) => void;
+  onRemoveFilm: (i: number) => void;
+  /** Highlight the selected film layer (only while the FILM tab is open). */
+  filmTab: boolean;
 };
 
 /**
  * Everything stacked on the photo, in the order it's applied. Tap a layer to
  * jump to its tab; × takes that one layer off.
  */
-export function Layers({ recipe: r, hasTexture, set, onClearTexture, onOpen }: Props) {
+export function Layers({
+  recipe: r,
+  hasTexture,
+  set,
+  onClearTexture,
+  onOpen,
+  filmLayer,
+  onFilmLayer,
+  onRemoveFilm,
+  filmTab,
+}: Props) {
   const layers: Layer[] = [];
   if (r.block > 1) {
     layers.push({ key: "size", kind: "SIZE", label: `${r.block}px`, tab: "pixel", remove: () => set({ block: 1 }) });
@@ -42,15 +66,18 @@ export function Layers({ recipe: r, hasTexture, set, onClearTexture, onOpen }: P
       });
     }
   }
-  if (r.film !== "none") {
+  const films = filmLayers(r);
+  films.forEach((l, i) => {
     layers.push({
-      key: "film",
-      kind: "FILM",
-      label: getStock(r.film)?.name ?? r.film,
+      key: `film${i}`,
+      kind: films.length > 1 ? `FILM ${i + 1}` : "FILM",
+      label: getStock(l.film)?.name ?? l.film,
       tab: "film",
-      remove: () => set({ film: "none" }),
+      open: () => onFilmLayer(i),
+      remove: () => onRemoveFilm(i),
+      active: filmTab && films.length > 1 && i === filmLayer,
     });
-  }
+  });
   if (hasTexture) {
     layers.push({
       key: "texture",
@@ -64,8 +91,15 @@ export function Layers({ recipe: r, hasTexture, set, onClearTexture, onOpen }: P
   return (
     <div className="layers" aria-label="Applied layers">
       {layers.map((l) => (
-        <span key={l.key} className="layer">
-          <button className="layer-main" onClick={() => onOpen(l.tab)} title={`Edit ${l.kind.toLowerCase()}`}>
+        <span key={l.key} className={`layer ${l.active ? "layer-active" : ""}`}>
+          <button
+            className="layer-main"
+            onClick={() => {
+              l.open?.();
+              onOpen(l.tab);
+            }}
+            title={`Edit ${l.kind.toLowerCase()}`}
+          >
             <span className="layer-kind">{l.kind}</span>
             {l.label}
           </button>
