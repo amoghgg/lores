@@ -109,28 +109,43 @@ class ThumbRenderer {
     const k = `${view}${size}`;
     const have = this.proxies.get(k);
     if (have) return have;
-    let bmp: ImageBitmap;
-    if (view === "fit") {
-      const s = Math.min(1, size / Math.max(src.width, src.height));
-      bmp = await createImageBitmap(src, {
-        resizeWidth: Math.max(8, Math.round(src.width * s)),
-        resizeHeight: Math.max(8, Math.round(src.height * s)),
-        resizeQuality: "high",
-      });
-    } else {
-      const w = Math.min(size, src.width);
-      const h = Math.min(size, src.height);
-      // Centre crop nudged up to the upper third — where faces and subjects sit.
-      const x = Math.round((src.width - w) / 2);
-      const y = Math.round((src.height - h) * 0.3);
-      bmp = await createImageBitmap(src, x, y, w, h);
-    }
+    const bmp = await makeProxy(src, view, size);
     if (this.source !== src) {
       bmp.close();
       return null;
     }
     this.proxies.set(k, bmp);
     return bmp;
+  }
+
+  /**
+   * Restyled looks (PS2, sticker…) are computed ONCE on the full source and
+   * the thumb is cut from that — so a thumbnail can never show a cut-out the
+   * full image doesn't get. Returns the proxy plus the film with the restyle
+   * already applied.
+   */
+  private async styledProxy(recipe: Recipe, view: ThumbView, size: number) {
+    const src = this.source;
+    const film = toFilm(recipe);
+    if (!src || !film || film.recipe.stylize === "none" || film.controls.amount <= 0) return null;
+    const { stylizedSource } = await import("./stylize");
+    const r = film.recipe;
+    const key = `${view}${size}|${r.stylize}|${r.stylizeBg}|${film.controls.amount.toFixed(2)}`;
+    let bmp = this.proxies.get(key);
+    if (!bmp) {
+      const st = await stylizedSource(src, r.stylize, r.stylizeBg, film.controls.amount, film.controls.seed);
+      bmp = await makeProxy(st.bitmap, view, size);
+      if (st.owned) st.bitmap.close();
+      if (this.source !== src) {
+        bmp.close();
+        return null;
+      }
+      this.proxies.set(key, bmp);
+    }
+    return {
+      bitmap: bmp,
+      film: { ...film, recipe: { ...r, stylize: "none" as const }, controls: { ...film.controls, amount: 1 } },
+    };
   }
 
   private async pump() {
@@ -149,11 +164,13 @@ class ThumbRenderer {
           continue;
         }
         const src = this.source;
-        const prox = await this.proxy(job.view, job.size);
+        const styled = await this.styledProxy(job.recipe, job.view, job.size);
+        const prox = styled ? styled.bitmap : await this.proxy(job.view, job.size);
         if (!prox || !src) {
           job.resolve(null);
           continue;
         }
+        const film = styled ? styled.film : toFilm(job.recipe);
         const settings = toSettings(job.recipe);
         if (job.view === "fit") {
           // Keep the look proportional: an 8px block on a 1600px photo is a
@@ -166,7 +183,7 @@ class ThumbRenderer {
           fit: OVERLAY_FIT_BITS,
         });
         try {
-          const r = await processBest(prox, settings, overlay, toFilm(job.recipe), "thumb");
+          const r = await processBest(prox, settings, overlay, film, "thumb");
           this.cache.set(job.key, r.canvas);
           if (this.cache.size > CACHE_MAX) {
             const first = this.cache.keys().next().value;
@@ -182,6 +199,24 @@ class ThumbRenderer {
       this.running = false;
     }
   }
+}
+
+/** A thumb-sized view of `src`: the whole frame, or a 1:1 upper-third crop. */
+async function makeProxy(src: ImageBitmap, view: ThumbView, size: number): Promise<ImageBitmap> {
+  if (view === "fit") {
+    const s = Math.min(1, size / Math.max(src.width, src.height));
+    return createImageBitmap(src, {
+      resizeWidth: Math.max(8, Math.round(src.width * s)),
+      resizeHeight: Math.max(8, Math.round(src.height * s)),
+      resizeQuality: "high",
+    });
+  }
+  const w = Math.min(size, src.width);
+  const h = Math.min(size, src.height);
+  // Centre crop nudged up to the upper third — where faces and subjects sit.
+  const x = Math.round((src.width - w) / 2);
+  const y = Math.round((src.height - h) * 0.3);
+  return createImageBitmap(src, x, y, w, h);
 }
 
 let renderer: ThumbRenderer | null = null;
