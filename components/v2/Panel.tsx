@@ -312,14 +312,14 @@ export function Now({ tab, recipe: r, set, films, favorites, onToggleFavorite, h
         </button>
       );
       const writing = textLabel(s.recipe.hud, s.recipe.dateStamp);
-      const textOn = L.text !== false;
+      const textOn = r.text !== false;
       main = (
         <>
           <Range label="STRENGTH" value={L.filmAmt} min={0} max={1} step={0.01} reset={1} format={pct}
             onChange={(filmAmt) => live({ filmAmt })} onCommit={(filmAmt) => commit({ filmAmt })} />
           {writing && (
             <label className="now-tick">
-              <input type="checkbox" checked={textOn} onChange={() => commit({ text: !textOn })} />
+              <input type="checkbox" checked={textOn} onChange={() => set({ text: !textOn })} />
               <span>{writing}</span>
             </label>
           )}

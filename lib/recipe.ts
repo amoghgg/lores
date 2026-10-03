@@ -36,9 +36,10 @@ export type Recipe = {
   vignette: number;
   leak: number;
   frame: boolean;
-  /** Burned-in writing (REC, timestamps, date stamp…) — off removes it. */
-  text: boolean;
   seed: number;
+  /** Burned-in writing (REC, timestamps, date stamp…) on ANY layer — off
+   *  removes it from every look in the stack. */
+  text: boolean;
   texBlend: BlendName;
   texFit: FitName;
   texOpacity: number; // 0..1
@@ -57,7 +58,6 @@ export type FilmLayer = {
   vignette: number;
   leak: number;
   frame: boolean;
-  text: boolean;
   seed: number;
 };
 
@@ -88,7 +88,7 @@ export const DEFAULT_RECIPE: Recipe = {
 };
 
 export function newLayer(film: string, seed = 7): FilmLayer {
-  return { film, filmAmt: 1, grain: 1, glow: 1, vignette: 1, leak: 1, frame: true, text: true, seed };
+  return { film, filmAmt: 1, grain: 1, glow: 1, vignette: 1, leak: 1, frame: true, seed };
 }
 
 const layerOf = (r: Recipe): FilmLayer => ({
@@ -99,7 +99,6 @@ const layerOf = (r: Recipe): FilmLayer => ({
   vignette: r.vignette,
   leak: r.leak,
   frame: r.frame,
-  text: r.text ?? true,
   seed: r.seed,
 });
 
@@ -173,7 +172,7 @@ export function toSettings(r: Recipe): Settings {
   };
 }
 
-export function layerFilm(l: FilmLayer): FilmInput | null {
+export function layerFilm(l: FilmLayer, text = true): FilmInput | null {
   const stock = getStock(l.film);
   if (!stock) return null;
   const controls: FilmControls = {
@@ -186,7 +185,7 @@ export function layerFilm(l: FilmLayer): FilmInput | null {
     frame: l.frame,
     seed: l.seed,
   };
-  const recipe = l.text === false ? { ...stock.recipe, hud: "none" as const, dateStamp: false } : stock.recipe;
+  const recipe = !text ? { ...stock.recipe, hud: "none" as const, dateStamp: false } : stock.recipe;
   return { recipe, controls };
 }
 
@@ -194,7 +193,7 @@ export function layerFilm(l: FilmLayer): FilmInput | null {
 export function toFilms(r: Recipe): FilmInput[] {
   if (!isOn(r, "film")) return [];
   return filmLayers(r)
-    .map(layerFilm)
+    .map((l) => layerFilm(l, r.text !== false))
     .filter((f): f is FilmInput => !!f);
 }
 
@@ -240,10 +239,10 @@ export function encodeRecipe(r: Recipe): string {
     if (l.vignette !== 1) p.push("v" + pct(l.vignette));
     if (l.leak !== 1) p.push("l" + pct(l.leak));
     if (!l.frame) p.push("f0");
-    if (l.text === false) p.push("t0");
     p.push("s" + l.seed);
     segs.push(bang("film") + p.join("."));
   }
+  if (r.text === false) segs.push("notext");
   if (
     r.texBlend !== DEFAULT_RECIPE.texBlend ||
     r.texFit !== DEFAULT_RECIPE.texFit ||
@@ -304,13 +303,16 @@ export function decodeRecipe(code: string): Recipe | null {
           else if (tag === "v") l.vignette = unpct(v, 1);
           else if (tag === "l") l.leak = unpct(v, 1);
           else if (tag === "f") l.frame = v !== "0";
-          else if (tag === "t") l.text = v !== "0";
+          else if (tag === "t") r.text = v !== "0"; // legacy per-layer flag
           else if (tag === "s" && /^\d+$/.test(v)) l.seed = Number(v);
         }
         films.push(l);
         if (off) r.off.film = true;
         break;
       }
+      case "notext":
+        r.text = false;
+        break;
       case "tx":
         if (BLENDS.some((b) => b.id === parts[0])) r.texBlend = parts[0] as BlendName;
         if (["cover", "tile", "fit"].includes(parts[1])) r.texFit = parts[1] as FitName;
