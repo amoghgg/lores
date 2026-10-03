@@ -9,6 +9,7 @@ import {
 import { getPalette } from "./palettes";
 import { stippleBlend } from "./blend";
 import { applyFilmCPU, type FilmRecipe, type FilmControls } from "./film";
+import { needsPost, postFilm } from "./filmPost";
 
 export type DitherMode =
   | "none"
@@ -294,6 +295,9 @@ export async function processBest(
           readback: true,
         });
         cpuGrid?.close();
+        if (film && film.controls.amount > 0 && needsPost(film.recipe)) {
+          await postFilm(r.canvas, film.recipe, film.controls.seed);
+        }
         return { ...r, engine: "gpu" };
       } catch (err) {
         console.warn("[pixel] GPU pipeline failed, falling back to CPU:", err);
@@ -301,6 +305,9 @@ export async function processBest(
     }
   }
   const r = process(source, settings, overlay, film);
+  if (film && film.controls.amount > 0 && needsPost(film.recipe)) {
+    await postFilm(r.canvas, film.recipe, film.controls.seed);
+  }
   return { ...r, engine: "cpu" };
 }
 

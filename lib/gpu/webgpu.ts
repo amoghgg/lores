@@ -469,6 +469,13 @@ struct Film {
   fx: vec4f,          // dust, scratches, border kind
   paper: vec4f,
   fx2: vec4f,         // flash, mosaic, handTint, dateStamp
+  tone3: vec4f, tone4: vec4f,   // tone0..4 = ramp stops at 0, ¼, ½, ¾, 1
+  quant: vec4f,       // mode, levels, cell px (2048 basis), simplify px
+  plateA: vec4f,      // dx, dy (2048 basis), amount
+  plateAColor: vec4f,
+  plateB: vec4f,
+  plateBColor: vec4f,
+  fx3: vec4f,         // scanlines, chroma bleed px, smear, sharpen
 };
 
 @group(0) @binding(0) var samp: sampler;
@@ -558,7 +565,49 @@ fn curve1(v0: f32, gamma: f32, lift: f32, gain: f32) -> f32 {
   return lift + v * (gain - lift);
 }
 
-fn grade(cin: vec3f, glow: vec3f, expGain: f32) -> vec3f {
+const BAYER8Q = array<f32, 64>(
+  0.0, 32.0, 8.0, 40.0, 2.0, 34.0, 10.0, 42.0, 48.0, 16.0, 56.0, 24.0, 50.0, 18.0, 58.0, 26.0,
+  12.0, 44.0, 4.0, 36.0, 14.0, 46.0, 6.0, 38.0, 60.0, 28.0, 52.0, 20.0, 62.0, 30.0, 54.0, 22.0,
+  3.0, 35.0, 11.0, 43.0, 1.0, 33.0, 9.0, 41.0, 51.0, 19.0, 59.0, 27.0, 49.0, 17.0, 57.0, 25.0,
+  15.0, 47.0, 7.0, 39.0, 13.0, 45.0, 5.0, 37.0, 63.0, 31.0, 55.0, 23.0, 61.0, 29.0, 53.0, 21.0
+);
+
+// Luminance quantisers for the Afterdark looks — mirrors quantize() in film.ts.
+fn quantize(l: f32, p: vec2f) -> f32 {
+  let mode = u32(F.quant.x);
+  if (mode == 0u) { return l; }
+  let n = max(2.0, F.quant.y);
+  let longEdge = max(F.head.x, F.head.y);
+  let cell = max(1.0, F.quant.z * longEdge / 2048.0);
+  if (mode == 1u) {
+    return min(n - 1.0, floor(l * n)) / (n - 1.0);
+  }
+  if (mode == 2u) {
+    let ci = vec2u(floor(p / cell)) % vec2u(8u);
+    let t = BAYER8Q[ci.y * 8u + ci.x] / 64.0 - 0.5;
+    return floor(clamp(l * (n - 1.0) + t + 0.5, 0.0, n - 1.0)) / (n - 1.0);
+  }
+  if (mode == 3u) {
+    let a = 0.78539816;
+    let uu = (p.x * cos(a) + p.y * sin(a)) / cell;
+    let vv = (-p.x * sin(a) + p.y * cos(a)) / cell;
+    let f = vec2f(uu - floor(uu) - 0.5, vv - floor(vv) - 0.5);
+    return select(1.0, 0.0, length(f) < sqrt(max(0.0, 1.0 - l)) * 0.62);
+  }
+  if (l < 0.75 && hash2(i32(p.x), i32(p.y), 9) < 0.012) { return 0.0; }
+  return step(0.5, l + vnoise(p / cell, 4) * 0.35);
+}
+
+fn ramp5(l: f32) -> vec3f {
+  let seg = min(3.0, floor(l * 4.0));
+  let t = l * 4.0 - seg;
+  if (seg < 1.0) { return mix(F.tone0.xyz, F.tone1.xyz, t); }
+  if (seg < 2.0) { return mix(F.tone1.xyz, F.tone2.xyz, t); }
+  if (seg < 3.0) { return mix(F.tone2.xyz, F.tone3.xyz, t); }
+  return mix(F.tone3.xyz, F.tone4.xyz, t);
+}
+
+fn grade(cin: vec3f, glow: vec3f, expGain: f32, p: vec2f) -> vec4f {
   var c = vec3f(dot(F.mixR.xyz, cin), dot(F.mixG.xyz, cin), dot(F.mixB.xyz, cin));
   c = clamp(c * F.wb.xyz * exp2(F.wb.w) * expGain + glow, vec3f(0.0), vec3f(1.0));
 
@@ -582,14 +631,12 @@ fn grade(cin: vec3f, glow: vec3f, expGain: f32) -> vec3f {
   c = c + st * F.shadowTint.w * ws + ht * F.highTint.w * wh;
 
   let tm = F.lift.w;
+  var level = clamp(dot(c, LUMA), 0.0, 1.0);
   if (tm > 0.0) {
-    let l2 = clamp(dot(c, LUMA), 0.0, 1.0);
-    var g: vec3f;
-    if (l2 < 0.5) { g = mix(F.tone0.xyz, F.tone1.xyz, l2 * 2.0); }
-    else { g = mix(F.tone1.xyz, F.tone2.xyz, (l2 - 0.5) * 2.0); }
-    c = mix(c, g, tm);
+    level = quantize(level, p);
+    c = mix(c, ramp5(level), tm);
   }
-  return clamp(c, vec3f(0.0), vec3f(1.0));
+  return vec4f(clamp(c, vec3f(0.0), vec3f(1.0)), level);
 }
 
 fn frameRect(kind: u32, res: vec2f) -> vec4f {
@@ -608,6 +655,7 @@ fn frameRect(kind: u32, res: vec2f) -> vec4f {
       return vec4f((res.x - iw) * 0.5, (res.y - ih) * 0.5, (res.x + iw) * 0.5, (res.y + ih) * 0.5);
     }
     case 8u: { return vec4f(s * 0.1, s * 0.08, res.x - s * 0.1, res.y - s * 0.08); }
+    case 10u: { return vec4f(s * 0.05, s * 0.05, res.x - s * 0.05, res.y - s * 0.05); }
     case 9u: {
       let ih = min(res.y, res.x / 2.39);
       return vec4f(0.0, (res.y - ih) * 0.5, res.x, (res.y + ih) * 0.5);
@@ -625,7 +673,7 @@ fn frameSDF(kind: u32, fr: vec4f, p: vec2f, s: f32, seed: i32) -> f32 {
     let k = length(vec2f((p.x - c.x) / ax, (p.y - c.y) / ay));
     return (k - 1.0) * min(ax, ay);
   }
-  var corner = array<f32, 10>(0.0, 0.004, 0.012, 0.02, 0.004, 0.0, 0.004, 0.01, 0.0, 0.0);
+  var corner = array<f32, 11>(0.0, 0.004, 0.012, 0.02, 0.004, 0.0, 0.004, 0.01, 0.0, 0.0, 0.0);
   var rr = corner[kind] * s;
   if (kind == 5u) { rr = (fr.w - fr.y) * 0.07; }
   let hsz = (fr.zw - fr.xy) * 0.5 - vec2f(rr);
@@ -640,8 +688,26 @@ fn frameSDF(kind: u32, fr: vec4f, p: vec2f, s: f32, seed: i32) -> f32 {
   } else if (kind == 7u) {
     d = d + vnoise(p / (s * 0.06), seed + 78) * s * 0.06
           + vnoise(vec2f(p.x / (s * 0.006), p.y / (s * 0.03)), seed + 79) * s * 0.01;
+  } else if (kind == 10u) {
+    // Torn photocopy edge: big rips, fibre streaks on both axes, fine bite.
+    d = d + vnoise(p / (s * 0.05), seed + 140) * s * 0.07
+          + vnoise(vec2f(p.x / (s * 0.004), p.y / (s * 0.12)), seed + 141) * s * 0.025
+          + vnoise(vec2f(p.x / (s * 0.12), p.y / (s * 0.004)), seed + 142) * s * 0.025
+          + vnoise(p / (s * 0.008), seed + 143) * s * 0.012;
   }
   return d;
+}
+
+// Ink specks and scratches clustered just inside a grunge border.
+fn grungeSpeck(p: vec2f, s: f32, sdf: f32, seed: i32) -> f32 {
+  let edge = clamp(1.0 + sdf / (s * 0.14), 0.0, 1.0);
+  if (edge <= 0.0) { return 0.0; }
+  let c = max(2.0, s / 360.0);
+  let h = hash2(i32(floor(p.x / c)), i32(floor(p.y / c)), seed + 123);
+  var v = select(0.0, 0.9, h > 1.0 - 0.09 * edge * edge);
+  let band = i32(floor(p.x / max(2.0, s / 500.0)));
+  if (hash2(band, 0, seed + 130) < 0.05 * edge) { v = max(v, 0.45 * edge); }
+  return v;
 }
 
 fn surround(kind: u32, sdf: f32, p: vec2f, h: f32, s: f32, seed: i32) -> vec3f {
@@ -770,12 +836,53 @@ fn fs(@location(0) uv: vec2f) -> @location(0) vec4f {
   let fsz = fr.zw - fr.xy;
   let fc = (fr.xy + fr.zw) * 0.5;
   let scale = max(fsz.x / res.x, fsz.y / res.y);
-  let suv = ((p - fc) / scale + res * 0.5) / res;
+  var suv = ((p - fc) / scale + res * 0.5) / res;
+  let k2048 = max(res.x, res.y) / 2048.0;
+
+  // Smear: bands of rows dragged sideways (tracking errors, witch-house drag).
+  if (F.fx3.z > 0.0) {
+    let band = i32(floor(p.y / max(2.0, s * 0.012)));
+    if (hash2(band, 7, seed) < F.fx3.z * 0.35) {
+      suv.x = suv.x + (hash2(band, 8, seed) - 0.5) * 0.12;
+    }
+  }
 
   let u = (p - fc) / fsz;
   let d = length(u) * 1.41421356;
 
   var c = textureSampleLevel(src, samp, suv, 0.0).rgb;
+
+  let rot0 = hash2(i32(p.x), i32(p.y), seed + 5) * 6.2831853;
+  // Simplify: soften shapes before posterize — Photoshop "Cutout" feel.
+  if (F.quant.w > 0.0) {
+    let R = F.quant.w * k2048;
+    var acc = c;
+    for (var i = 0; i < 12; i = i + 1) {
+      let fi = f32(i) + 0.5;
+      let a = fi * GOLDEN + rot0;
+      acc = acc + textureSampleLevel(src, samp, suv + vec2f(cos(a), sin(a)) * sqrt(fi / 12.0) * R / res, 0.0).rgb;
+    }
+    c = acc / 13.0;
+  }
+  // VHS chroma bleed: luma stays sharp, colour smears sideways.
+  if (F.fx3.y > 0.0) {
+    let R = F.fx3.y * k2048;
+    var ch = vec3f(0.0);
+    for (var i = -3; i <= 3; i = i + 1) {
+      let t = textureSampleLevel(src, samp, suv + vec2f(f32(i) * R / 3.0 / res.x, 0.0), 0.0).rgb;
+      ch = ch + (t - vec3f(dot(t, LUMA)));
+    }
+    c = vec3f(dot(c, LUMA)) + ch / 7.0;
+  }
+  // Sharpen: unsharp against a 1px cross.
+  if (F.fx3.w > 0.0) {
+    let o = vec2f(1.0) / res;
+    let nb = (textureSampleLevel(src, samp, suv + vec2f(o.x, 0.0), 0.0).rgb
+            + textureSampleLevel(src, samp, suv - vec2f(o.x, 0.0), 0.0).rgb
+            + textureSampleLevel(src, samp, suv + vec2f(0.0, o.y), 0.0).rgb
+            + textureSampleLevel(src, samp, suv - vec2f(0.0, o.y), 0.0).rgb) * 0.25;
+    c = clamp(c + (c - nb) * F.fx3.w * 1.5, vec3f(0.0), vec3f(1.0));
+  }
 
   let ca = F.glowP.w * s;
   if (ca > 0.0) {
@@ -823,7 +930,28 @@ fn fs(@location(0) uv: vec2f) -> @location(0) vec4f {
   if (F.fx2.x > 0.0) {
     flashG = 1.0 + (mix(1.2, 0.5, smoothstep(0.05, 0.95, d)) - 1.0) * F.fx2.x;
   }
-  c = grade(c, glow, flashG);
+  let graded = grade(c, glow, flashG, p);
+  c = graded.rgb;
+
+  // Misregistered plates: colour where a neighbour (offset) is ink but this
+  // pixel isn't — the yellow/red fringe on print-artefact edits.
+  if (F.plateA.z > 0.0 || F.plateB.z > 0.0) {
+    // Only on genuinely light pixels next to ink — real misregistration shows
+    // at shape edges, not throughout a dithered shadow.
+    let lightHere = graded.w > 0.6;
+    if (lightHere) {
+      for (var pi = 0; pi < 2; pi = pi + 1) {
+        var pl = F.plateA;
+        var plc = F.plateAColor.xyz;
+        if (pi == 1) { pl = F.plateB; plc = F.plateBColor.xyz; }
+        if (pl.z <= 0.0) { continue; }
+        let pp = p - pl.xy * k2048;
+        let puv = ((pp - fc) / scale + res * 0.5) / res;
+        let nb = grade(textureSampleLevel(src, samp, puv, 0.0).rgb, vec3f(0.0), 1.0, pp);
+        if (nb.w < 0.2) { c = mix(c, plc, pl.z); break; }
+      }
+    }
+  }
 
   if (F.fx2.z > 0.0) {
     // Hand-tint: wide blurred chroma bleeding past edges, gone in the shadows.
@@ -870,6 +998,11 @@ fn fs(@location(0) uv: vec2f) -> @location(0) vec4f {
 
   let sdf = frameSDF(kind, fr, p, s, seed);
   if (kind == 8u && sdf < 0.0) { c = tarnish(c, sdf, s, p, seed); }
+  if (kind == 10u && sdf < 0.0) { c = mix(c, F.paper.xyz, grungeSpeck(p, s, sdf, seed)); }
+  // Interlace / scanlines at ~480 lines regardless of image size.
+  if (F.fx3.x > 0.0 && (u32(floor(p.y / max(1.0, res.y / 480.0))) % 2u) == 1u) {
+    c = c * (1.0 - F.fx3.x);
+  }
   var edgeSoft = 0.75;
   if (kind == 5u) { edgeSoft = s * 0.004; }
   let outside = smoothstep(-edgeSoft, edgeSoft, sdf);

@@ -17,7 +17,17 @@ export type BorderKind =
   | "deckle"
   | "pour"
   | "oval"
-  | "letterbox";
+  | "letterbox"
+  | "grunge";
+
+/** How the graded luminance is quantised before the gradient map. */
+export type QuantMode = "none" | "posterize" | "bayer" | "halftone" | "threshold";
+
+/** A misregistered ink plate peeking out from behind the darkest ink. */
+export type Plate = { dx: number; dy: number; color: string; amount: number };
+
+/** Camera / deck overlays burned in after rendering. */
+export type HudKind = "none" | "rec" | "vhs" | "trail" | "thermal" | "witch";
 
 export type FilmRecipe = {
   /** Channel mixer rows (out.r = dot(mix[0], in)). Spectral response quirks. */
@@ -50,8 +60,11 @@ export type FilmRecipe = {
   highAmt: number;
   /** Shifts the shadow/highlight split. -0.3..0.3. */
   balance: number;
-  /** Luminance gradient map (shadow, mid, highlight). Used by toned/alt prints. */
-  tone: [string, string, string];
+  /**
+   * Luminance gradient map. Three stops (shadow, mid, highlight) or five
+   * (0, ¼, ½, ¾, 1). Used by toned/alt prints and the Afterdark looks.
+   */
+  tone: string[];
   toneMix: number;
   /** Halation / bloom: highlights bleed this color. */
   glowColor: string;
@@ -90,6 +103,28 @@ export type FilmRecipe = {
   dateStamp: boolean;
   /** Every reroll draws a different expired-roll cast. */
   lottery: boolean;
+  /** Quantiser applied to luminance before the gradient map. */
+  quant: QuantMode;
+  /** Posterize / dither levels. */
+  levels: number;
+  /** Dither / halftone / threshold cell size in px at a 2048px long edge. */
+  cell: number;
+  /** Pre-blur in px (2048 basis) — simplifies shapes for cutout looks. */
+  simplify: number;
+  /** Up to two misregistered plates (offsets in px at 2048 basis). */
+  plates: Plate[];
+  /** Interlace / scanline darkening, 0..1. */
+  scanlines: number;
+  /** VHS chroma bleed width in px (2048 basis). */
+  bleed: number;
+  /** Rows dragged sideways — tracking errors and witch-house smear. 0..1. */
+  smear: number;
+  /** Edge sharpening (digicam / VHS enhancement / deep-fry halos). */
+  sharpen: number;
+  /** Burned-in overlay drawn after rendering. */
+  hud: HudKind;
+  /** Real JPEG re-encodes after rendering, 0..1 (1 = deep-fried). */
+  crunch: number;
 };
 
 export const NEUTRAL: FilmRecipe = {
@@ -140,6 +175,17 @@ export const NEUTRAL: FilmRecipe = {
   handTint: 0,
   dateStamp: false,
   lottery: false,
+  quant: "none",
+  levels: 4,
+  cell: 4,
+  simplify: 0,
+  plates: [],
+  scanlines: 0,
+  bleed: 0,
+  smear: 0,
+  sharpen: 0,
+  hud: "none",
+  crunch: 0,
 };
 
 /** User-facing multipliers layered on top of a stock's recipe. */
@@ -176,6 +222,7 @@ export const BORDER_BITS: Record<BorderKind, number> = {
   pour: 7,
   oval: 8,
   letterbox: 9,
+  grunge: 10,
 };
 
 export function hex3(s: string): Vec3 {
@@ -214,7 +261,23 @@ export function resolveRecipe(r: FilmRecipe, seed: number): FilmRecipe {
 }
 
 /** Uniform layout: 33 vec4f — mirrors `struct Film` in FRAG_FILM. */
-export const FILM_UNIFORM_BYTES = 33 * 16;
+export const FILM_UNIFORM_BYTES = 41 * 16;
+
+export const QUANT_BITS: Record<QuantMode, number> = {
+  none: 0,
+  posterize: 1,
+  bayer: 2,
+  halftone: 3,
+  threshold: 4,
+};
+
+/** Any tone list → the five stops (0, ¼, ½, ¾, 1) the shader interpolates. */
+export function toneStops(tone: string[]): Vec3[] {
+  const t = tone.map(hex3);
+  if (t.length >= 5) return t.slice(0, 5);
+  const mid = (a: Vec3, b: Vec3): Vec3 => [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2];
+  return [t[0], mid(t[0], t[1]), t[1], mid(t[1], t[2]), t[2]];
+}
 
 export function packFilmUniform(
   recipeIn: FilmRecipe,
@@ -257,9 +320,10 @@ export function packFilmUniform(
   }
   col(r.shadowTint, r.shadowAmt);
   col(r.highTint, r.highAmt);
-  col(r.tone[0], 0);
-  col(r.tone[1], 0);
-  col(r.tone[2], 0);
+  const stops = toneStops(r.tone);
+  v4(...stops[0], 0);
+  v4(...stops[1], 0);
+  v4(...stops[2], 0);
   col(r.glowColor, r.glow * c.glow);
   v4(r.glowThreshold, r.glowRadius, r.soft, r.ca);
   v4(r.grain * c.grain, r.grainSize, r.grainChroma, time);
@@ -270,6 +334,16 @@ export function packFilmUniform(
   v4(r.dust, r.scratches, c.frame ? BORDER_BITS[r.border] : 0, 0);
   col(r.paper, 0);
   v4(r.flash, r.mosaic, r.handTint, r.dateStamp ? 1 : 0);
+  // ── Afterdark additions (appended so earlier offsets never move) ──
+  v4(...stops[3], 0);
+  v4(...stops[4], 0);
+  v4(QUANT_BITS[r.quant], Math.max(2, r.levels), r.cell, r.simplify);
+  for (let i = 0; i < 2; i++) {
+    const pl = r.plates[i];
+    v4(pl ? pl.dx : 0, pl ? pl.dy : 0, pl ? pl.amount : 0, 0);
+    col(pl ? pl.color : "#000000", 0);
+  }
+  v4(r.scanlines, r.bleed, r.smear, r.sharpen);
   return buf;
 }
 
@@ -335,7 +409,7 @@ export type GradeCtx = {
   r: FilmRecipe;
   shadowTint: Vec3;
   highTint: Vec3;
-  tone: [Vec3, Vec3, Vec3];
+  tone: Vec3[];
   expMul: number;
 };
 
@@ -344,7 +418,7 @@ export function gradeCtx(r: FilmRecipe): GradeCtx {
     r,
     shadowTint: hex3(r.shadowTint),
     highTint: hex3(r.highTint),
-    tone: [hex3(r.tone[0]), hex3(r.tone[1]), hex3(r.tone[2])],
+    tone: toneStops(r.tone),
     expMul: Math.pow(2, r.exposure),
   };
 }
@@ -360,7 +434,11 @@ export function gradePixel(
   gi: number,
   bi: number,
   glow: Vec3 = [0, 0, 0],
-  expGain = 1
+  expGain = 1,
+  /** Pixel position + long edge — needed by the positional quantisers. */
+  px = 0,
+  py = 0,
+  longEdge = 2048
 ): Vec3 {
   const r = g.r;
   let x = r.mix[0][0] * ri + r.mix[0][1] * gi + r.mix[0][2] * bi;
@@ -403,16 +481,52 @@ export function gradePixel(
   z += (st[2] - sl) * r.shadowAmt * ws + (ht[2] - hl) * r.highAmt * wh;
 
   if (r.toneMix > 0) {
-    const l2 = clamp01(lum(x, y, z));
-    const [a, m, b] = g.tone;
-    const t = l2 < 0.5 ? l2 * 2 : (l2 - 0.5) * 2;
-    const lo = l2 < 0.5 ? a : m;
-    const hi = l2 < 0.5 ? m : b;
+    const l2 = quantize(r, clamp01(lum(x, y, z)), px, py, longEdge);
+    const seg = Math.min(3, Math.floor(l2 * 4));
+    const t = l2 * 4 - seg;
+    const lo = g.tone[seg];
+    const hi = g.tone[seg + 1];
     x += (lo[0] + (hi[0] - lo[0]) * t - x) * r.toneMix;
     y += (lo[1] + (hi[1] - lo[1]) * t - y) * r.toneMix;
     z += (lo[2] + (hi[2] - lo[2]) * t - z) * r.toneMix;
   }
   return [clamp01(x), clamp01(y), clamp01(z)];
+}
+
+const BAYER8 = [
+  0, 32, 8, 40, 2, 34, 10, 42, 48, 16, 56, 24, 50, 18, 58, 26, 12, 44, 4, 36, 14, 46, 6, 38,
+  60, 28, 52, 20, 62, 30, 54, 22, 3, 35, 11, 43, 1, 33, 9, 41, 51, 19, 59, 27, 49, 17, 57, 25,
+  15, 47, 7, 39, 13, 45, 5, 37, 63, 31, 55, 23, 61, 29, 53, 21,
+];
+
+/** Luminance quantisers — mirrors `quantize` in FRAG_FILM. */
+export function quantize(r: FilmRecipe, l: number, px: number, py: number, longEdge: number): number {
+  const n = Math.max(2, r.levels);
+  const cell = Math.max(1, (r.cell * longEdge) / 2048);
+  switch (r.quant) {
+    case "posterize":
+      return Math.min(n - 1, Math.floor(l * n)) / (n - 1);
+    case "bayer": {
+      const cx = Math.floor(px / cell) & 7;
+      const cy = Math.floor(py / cell) & 7;
+      const t = BAYER8[cy * 8 + cx] / 64 - 0.5;
+      return Math.floor(Math.max(0, Math.min(n - 1, l * (n - 1) + t + 0.5))) / (n - 1);
+    }
+    case "halftone": {
+      const a = Math.PI / 4;
+      const u = (px * Math.cos(a) + py * Math.sin(a)) / cell;
+      const v = (-px * Math.sin(a) + py * Math.cos(a)) / cell;
+      const fu = u - Math.floor(u) - 0.5;
+      const fv = v - Math.floor(v) - 0.5;
+      return Math.hypot(fu, fv) < Math.sqrt(Math.max(0, 1 - l)) * 0.62 ? 0 : 1;
+    }
+    case "threshold": {
+      const nz = vnoise(px / cell, py / cell, 4) * 0.35;
+      if (l < 0.75 && hash2(px | 0, py | 0, 9) < 0.012) return 0;
+      return l + nz > 0.5 ? 1 : 0;
+    }
+  }
+  return l;
 }
 
 // Hash → [0, 1). Same integer mix as the shader's `hash2`.
@@ -478,6 +592,8 @@ export function frameRect(kind: number, w: number, h: number): FrameRect {
     }
     case 8:
       return inset(0.1, 0.08, 0.1, 0.08); // oval mat opening (bounding box)
+    case 10:
+      return inset(0.05, 0.05, 0.05, 0.05); // torn photocopy border
     case 9: {
       const ih = Math.min(h, w / 2.39);
       return { x0: 0, y0: (h - ih) / 2, x1: w, y1: (h + ih) / 2 };
@@ -486,7 +602,7 @@ export function frameRect(kind: number, w: number, h: number): FrameRect {
   return { x0: 0, y0: 0, x1: w, y1: h };
 }
 
-const CORNER = [0, 0.004, 0.012, 0.02, 0.004, 0, 0.004, 0.01, 0, 0];
+const CORNER = [0, 0.004, 0.012, 0.02, 0.004, 0, 0.004, 0.01, 0, 0, 0];
 
 /** Signed distance (px) to the picture window; <0 is inside. */
 export function frameSDF(
@@ -527,8 +643,32 @@ export function frameSDF(
     d +=
       vnoise(px / (s * 0.06), py / (s * 0.06), seed + 78) * s * 0.06 +
       vnoise(px / (s * 0.006), py / (s * 0.03), seed + 79) * s * 0.01;
+  } else if (kind === 10) {
+    d += grungeEdge(px, py, s, seed);
   }
   return d;
+}
+
+/** Torn photocopy edge: big rips, fibre streaks along both axes, fine bite. */
+export function grungeEdge(px: number, py: number, s: number, seed: number): number {
+  return (
+    vnoise(px / (s * 0.05), py / (s * 0.05), seed + 140) * s * 0.07 +
+    vnoise(px / (s * 0.004), py / (s * 0.12), seed + 141) * s * 0.025 +
+    vnoise(px / (s * 0.12), py / (s * 0.004), seed + 142) * s * 0.025 +
+    vnoise(px / (s * 0.008), py / (s * 0.008), seed + 143) * s * 0.012
+  );
+}
+
+/** Ink specks and scratches that cluster just inside a grunge border. */
+export function grungeSpeck(px: number, py: number, s: number, sdf: number, seed: number): number {
+  const edge = clamp01(1 + sdf / (s * 0.14));
+  if (edge <= 0) return 0;
+  const c = Math.max(2, s / 360);
+  const h = hash2(Math.floor(px / c), Math.floor(py / c), seed + 123);
+  let v = h > 1 - 0.09 * edge * edge ? 0.9 : 0;
+  const band = Math.floor(px / Math.max(2, s / 500));
+  if (hash2(band, 0, seed + 130) < 0.05 * edge) v = Math.max(v, 0.45 * edge);
+  return v;
 }
 
 /** Colour for a pixel outside the picture window (paper, metal, black gate). */
@@ -799,7 +939,7 @@ export function applyFilmCPU(
         const k = e * glowAmt * 1.6;
         glow = [gc[0] * k, gc[1] * k, gc[2] * k];
       }
-      let col = gradePixel(g, R, G, B, glow, flashGain(r.flash, d));
+      let col = gradePixel(g, R, G, B, glow, flashGain(r.flash, d), px, py, Math.max(w, h));
       [R, G, B] = col;
 
       if (tintData) {
@@ -855,6 +995,17 @@ export function applyFilmCPU(
 
       const sdf = frameSDF(kind, fr, px, py, s, seed);
       if (kind === 8 && sdf < 0) [R, G, B] = tarnish([R, G, B], sdf, s, px, py, seed);
+      if (kind === 10 && sdf < 0) {
+        const k = grungeSpeck(px, py, s, sdf, seed);
+        R += (paper[0] - R) * k;
+        G += (paper[1] - G) * k;
+        B += (paper[2] - B) * k;
+      }
+      if (r.scanlines > 0 && Math.floor(py / Math.max(1, h / 480)) % 2 === 1) {
+        R *= 1 - r.scanlines;
+        G *= 1 - r.scanlines;
+        B *= 1 - r.scanlines;
+      }
       const outside = smooth(-edgeSoft, edgeSoft, sdf);
       if (outside > 0) {
         const sc = surround(kind, paper, sdf, px, py, h, s, seed);

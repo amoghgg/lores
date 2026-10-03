@@ -8,7 +8,7 @@ Live at **[pixel.amoghbajpai.com](https://pixel.amoghbajpai.com)**.
 
 Pick a look → adjust one slider → **Save**.
 
-- **Three tabs**: FILM (63 looks), PIXEL (size, colours, pattern), MORE (texture, sound).
+- **Three tabs**: FILM (81 looks), PIXEL (size, colours, pattern), MORE (texture, sound).
 - Every option is a live thumbnail of *your* photo; hover on desktop previews it full-size.
 - **Hold the photo** (or `\`) to see the original. **⚄ Surprise** (Space) rolls a new look.
 - Undo / redo, and the session survives a reload (IndexedDB + localStorage).
@@ -22,14 +22,20 @@ Pick a look → adjust one slider → **Save**.
 - **Block-average pixelation** with adjustable size (1–48 px)
 - **9 palette presets**: Game Boy, GB Pocket, CGA, PICO-8, Sweetie 16, C64, Endesga 32, Mono, Original
 - **Dithering**: none, Floyd-Steinberg, Bayer 4×4, Bayer 8×8
-- **Film**: 63 vintage film, camera, and print-process looks in six groups —
+- **Film**: 81 film, camera, and print-process looks in six groups —
   colour negative (Portra, Gold, Superia, Wolfen NC500…), slide & cinema
   (Kodachrome, Velvia, Vision3→2383 print, CineStill 800T halation,
   Technicolor 2-strip), lab & decay (cross-process, redscale, LomoChrome
   Purple, Aerochrome, expired-roll lottery, faded '70s print), cameras
   (SX-70, Instax, Holga, disposable flash with LED date stamp, Super 8 gate),
   antique (tintype, daguerreotype, autochrome, cyanotype, platinum,
-  hand-tinted), and earth & auteur grades. One parametric model on the GPU
+  hand-tinted), earth & auteur grades, and AFTERDARK — the IG-goth /
+  underground-rap edits: NightShot IR camcorder, trail cam, thermal, VHS
+  found footage, witch house, xerox zine, halftone, riso misprint, grunge
+  angel dithers with misregistered plates and torn photocopy frames,
+  cutout and gig-poster posterize, 1-bit, soft grunge '14, deep fried and
+  CCD digicam (with burned-in REC / PLAY / trail-cam HUDs and real JPEG
+  crunch). One parametric model on the GPU
   with a CPU port: channel mixer, 12-band hue control, gray-ramp curves,
   split tone, halation, grain, vignette, leaks, dust, and print borders.
   PHOTO MODE bypasses the pixel stages for a straight film look.
