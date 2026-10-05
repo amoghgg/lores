@@ -58,9 +58,16 @@ test("one text switch removes writing from every layer", async ({ page }) => {
   await enterFresh(page);
   await expect(page.locator(".now-tick")).toHaveCount(0); // Portra writes nothing
   await openFamily(page, "AFTERDARK");
+  let prev = await fingerprint(page);
   await look(page, "NIGHTSHOT").click();
+  await page.mouse.move(2, 2);
+  await waitForChange(page, prev, 0.05, 90_000);
+  prev = await fingerprint(page);
   await look(page, "NIGHTSHOT").locator(".thumb-plus").click();
+  await page.mouse.move(2, 2);
   await waitRecipe(page, (c) => count(c) === 2);
+  // Wait for the two-layer render to land before measuring (slow on CI).
+  await waitForChange(page, prev, 0.05, 90_000);
   await expect(page.locator(".now-tick")).toContainText("NIGHTSHOT");
 
   const corner = () =>
@@ -75,7 +82,7 @@ test("one text switch removes writing from every layer", async ({ page }) => {
   const withText = await corner();
   await page.locator(".now-tick input").click();
   await waitRecipe(page, (c) => c.includes("notext"));
-  await expect.poll(async () => meanDiff(await corner(), withText)).toBeGreaterThan(2);
+  await expect.poll(async () => meanDiff(await corner(), withText), { timeout: 90_000 }).toBeGreaterThan(2);
   await page.locator(".layer", { hasText: "LOOK 1" }).locator(".layer-main").click();
   await expect(page.locator(".now-tick input")).not.toBeChecked();
   expect(errors).toEqual([]);
