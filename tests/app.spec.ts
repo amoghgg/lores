@@ -2,7 +2,7 @@
 // saving with the recipe inside the PNG, persistence, links, ⌘K, theme.
 import { test, expect } from "@playwright/test";
 import fs from "node:fs";
-import { enterFresh, fingerprint, look, nowTitle, openFamily, recipe, trackErrors, waitForChange, waitRecipe } from "./helpers";
+import { enterFresh, fingerprint, look, meanDiff, nowTitle, openFamily, recipe, trackErrors, waitForChange, waitRecipe } from "./helpers";
 
 test("home → app, brand and default look", async ({ page }) => {
   const errors = trackErrors(page);
@@ -129,4 +129,48 @@ test("environment report (GPU)", async ({ page }) => {
   const t0 = Date.now();
   await expect(page.locator(".viewer-layer:last-child canvas")).toHaveCount(1, { timeout: 60_000 });
   console.log(`GPU: ${gpu} · first render ${Date.now() - t0}ms · ${logs.join(" | ") || "no [pixel] logs"}`);
+});
+
+test("browsing looks never downloads an AI model; choosing one does", async ({ page }) => {
+  const models: string[] = [];
+  page.on("request", (r) => {
+    if (/\.tflite|vision_wasm|onnx|huggingface/.test(r.url())) models.push(r.url());
+  });
+  await enterFresh(page);
+  for (const fam of ["BEST", "PS2 & PAINT", "SCREENS & MACHINES"]) {
+    await openFamily(page, fam);
+    await page.locator(".strip").evaluate((e) => e.scrollIntoView({ block: "end" }));
+    await page.waitForTimeout(1500);
+  }
+  expect(models).toEqual([]);
+  await expect(page.locator(".thumb-defer").first()).toContainText("TAP TO LOAD");
+  // Choosing a tracking look loads its detector, and its tile then renders.
+  await look(page, "BLOB TRACK").click();
+  await expect.poll(() => models.some((u) => u.includes("efficientdet")), { timeout: 30_000 }).toBe(true);
+  await expect(look(page, "BLOB TRACK").locator(".thumb-defer")).toHaveCount(0, { timeout: 30_000 });
+});
+
+test("datamosh strength changes how much it moshes", async ({ page }) => {
+  await enterFresh(page);
+  await look(page, "DATAMOSH").click();
+  const slider = page.locator(".range input").first();
+  const set = async (f: number) => {
+    const b = (await slider.boundingBox())!;
+    await page.mouse.click(b.x + b.width * f, b.y + b.height / 2);
+    await page.mouse.move(2, 2);
+    await page.waitForTimeout(2500);
+    return fingerprint(page);
+  };
+  const low = await set(0.15);
+  const high = await set(0.99);
+  await look(page, "NONE").click();
+  await page.mouse.move(2, 2);
+  await page.waitForTimeout(2000);
+  const none = await fingerprint(page);
+  const maxDiff = (a: number[], b: number[]) => a.reduce((m, v, i) => Math.max(m, Math.abs(v - b[i])), 0);
+  console.log(`mosh low: mean ${meanDiff(low, none).toFixed(1)} max ${maxDiff(low, none)} · high: mean ${meanDiff(high, none).toFixed(1)}`);
+  // Low strength moshes fewer blocks, but those blocks really move — a 15%
+  // fade could never shift a pixel this far.
+  expect(maxDiff(low, none)).toBeGreaterThan(80);
+  expect(meanDiff(high, none)).toBeGreaterThan(meanDiff(low, none) * 1.5);
 });
