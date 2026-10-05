@@ -4,7 +4,7 @@ const KEYS: [string, string][] = [
   ["HOLD PHOTO  ·  \\", "See the original"],
   ["← →", "Previous / next look"],
   ["SPACE", "Surprise me"],
-  ["1  2  3", "Film · Pixel · More"],
+  ["1  2  3", "Looks · Pixel · More"],
   ["F", "Save the current film to ★"],
   ["⌘Z  ⇧⌘Z", "Undo / redo"],
   ["⌘S", "Save image"],

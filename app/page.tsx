@@ -14,7 +14,7 @@ import { VisualizeSection, VIZ_MODE_BITS, type VizMode } from "@/components/Visu
 
 import { processBest } from "@/lib/pipeline";
 import { PALETTES } from "@/lib/palettes";
-import { FILM_CATEGORIES, FILM_STOCKS, getStock } from "@/lib/filmStocks";
+import { FILM_STOCKS, chipFor, getStock } from "@/lib/filmStocks";
 import { getAudio } from "@/lib/audio";
 import { getWebGPU, OVERLAY_BLEND_BITS, OVERLAY_FIT_BITS } from "@/lib/gpu/webgpu";
 import {
@@ -147,10 +147,23 @@ export default function Page() {
     },
     [apply]
   );
+  // Layers re-sort into engine order, so follow the edited layer by identity.
+  const follow = (next: Recipe, film: string, seed?: number) => {
+    const ls = filmLayers(next);
+    let i = -1;
+    ls.forEach((l, j) => {
+      if (l.film === film && (seed === undefined || l.seed === seed)) i = j;
+    });
+    if (i < 0) ls.forEach((l, j) => l.film === film && (i = j));
+    setFilmLayer(Math.max(0, i));
+  };
   const pickFilm = useCallback(
     (id: string) => {
       if (id === "none") return removeFilm(filmLayerRef.current);
-      apply(patchLayer({ ...recipeRef.current, off: {} }, filmLayerRef.current, { film: id }));
+      const cur = filmLayers(recipeRef.current)[filmLayerRef.current];
+      const next = patchLayer({ ...recipeRef.current, off: {} }, filmLayerRef.current, { film: id });
+      apply(next);
+      follow(next, id, cur?.seed);
     },
     [apply, removeFilm]
   );
@@ -159,7 +172,7 @@ export default function Page() {
       const n = filmLayers(recipeRef.current).length;
       const next = patchLayer({ ...recipeRef.current, off: {} }, n, { film: id });
       apply(next);
-      setFilmLayer(filmLayers(next).length - 1);
+      follow(next, id);
     },
     [apply]
   );
@@ -193,7 +206,7 @@ export default function Page() {
 
   // ─── UI state ────────────────────────────────────────────────────────
   const [tab, setTab] = useState<Tab>("film");
-  const [filmCat, setFilmCat] = useState<string>(FILM_CATEGORIES[0].id);
+  const [filmCat, setFilmCat] = useState<string>("best");
   const [favorites, setFavorites] = useState<string[]>([]);
   const [overlay, setOverlay] = useState<null | "export" | "palette" | "help">(null);
   const [holdKey, setHoldKey] = useState(false);
@@ -384,7 +397,7 @@ export default function Page() {
   const loadBlob = useCallback(
     async (blob: Blob, filename: string, opts: { remember?: boolean } = {}) => {
       try {
-        // A PIXEL PNG carries its recipe — dropping one restores the look.
+        // A LORES PNG carries its recipe — dropping one restores the look.
         const code = await readRecipe(blob);
         const next = await decodeImage(blob, filename);
         setSource((prev) => {
@@ -455,7 +468,7 @@ export default function Page() {
     const opts = lsGet<ExportOptions | null>("export", null);
     if (opts) setExportOpts(opts);
     const stock = getStock(start.film);
-    if (stock) setFilmCat(stock.category);
+    if (stock) setFilmCat(chipFor(stock.id));
     if (!fromHash && start.film === "none" && isPixelArt(start)) setTab("pixel");
 
     void (async () => {
@@ -504,7 +517,7 @@ export default function Page() {
     apply(next);
     if (next.film !== "none") {
       const s = getStock(next.film);
-      if (s) setFilmCat(s.category);
+      if (s) setFilmCat(chipFor(s.id));
     }
     setTab(next.film !== "none" ? "film" : "pixel");
     // On the sample, every third roll comes with a fact.
@@ -536,7 +549,7 @@ export default function Page() {
           .replace(/(\d+)PX\b/, "$1px")
       )
       .join(", ");
-    return `${base} (${look === "Original" ? "Pixel" : look}).${ext}`;
+    return `${base} (${look === "Original" ? "Lores" : look}).${ext}`;
   };
 
   const exportBlob = async (opts: ExportOptions) => {
@@ -603,8 +616,8 @@ export default function Page() {
         const id = list[(i + dir + list.length) % list.length];
         pickFilm(id);
         const s = getStock(id);
-        if (s) setFilmCat(s.category);
-        say(s ? s.name : "NO FILM", 900);
+        if (s) setFilmCat(chipFor(s.id));
+        say(s ? s.name : "NO LOOK", 900);
       } else if (tab === "pixel") {
         const i = BLOCKS.indexOf(r.block);
         const b = BLOCKS[Math.max(0, Math.min(BLOCKS.length - 1, (i < 0 ? 0 : i) + dir))];
@@ -768,12 +781,12 @@ export default function Page() {
       c.push({
         id: "film:" + s.id,
         label: s.name,
-        group: "FILM",
+        group: "LOOKS",
         hint: s.hint,
         run: () => {
           pickFilm(s.id);
           setTab("film");
-          setFilmCat(s.category);
+          setFilmCat(chipFor(s.id));
         },
       });
     }
@@ -825,7 +838,7 @@ export default function Page() {
           onClick={(e) => goHome(centerOf(e.currentTarget.getBoundingClientRect()))}
           title="Home"
         >
-          PIXEL
+          LORES
         </button>
         <button className="bar-file" onClick={openPicker} title="Open another image (or drop / paste one anywhere)">
           <span className="truncate">{source?.filename ?? "…"}</span>

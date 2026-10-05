@@ -1,9 +1,9 @@
 {
-  "name": "pixel",
+  "name": "lores",
   "version": "0.1.0",
   "private": true,
-  "description": "Browser-only pixel art tool — drop an image, get authentic 8-bit output.",
-  "homepage": "https://pixel.amoghbajpai.com",
+  "description": "Film, screen, glitch and pixel looks for your photos \u2014 on-device, in the browser.",
+  "homepage": "https://lores.amoghbajpai.com",
   "repository": "github:amoghgg/lores",
   "license": "MIT",
   "scripts": {
@@ -11,7 +11,9 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "playwright test",
+    "test:unit": "playwright test tests/recipe.spec.ts"
   },
   "dependencies": {
     "@mediapipe/tasks-vision": "^1.0.1",
@@ -21,6 +23,7 @@
     "react-dom": "^19.2.5"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "@types/node": "22.10.5",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",

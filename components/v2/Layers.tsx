@@ -2,7 +2,7 @@
 
 import { PALETTES } from "@/lib/palettes";
 import { getStock } from "@/lib/filmStocks";
-import { BLENDS, DITHERS, filmLayers, type Recipe } from "@/lib/recipe";
+import { BLENDS, DITHERS, filmLayers, stageOf, type Recipe } from "@/lib/recipe";
 import type { Tab } from "./Panel";
 
 type Layer = {
@@ -45,6 +45,23 @@ export function Layers({
   filmTab,
 }: Props) {
   const layers: Layer[] = [];
+  // Shown in the order the engine really applies them: restyles, then the
+  // PIXEL tab, then grades, then texture, then screens.
+  const films = filmLayers(r);
+  const looks = (stage: number) =>
+    films.forEach((l, i) => {
+      if (stageOf(l.film) !== stage) return;
+      layers.push({
+        key: `film${i}`,
+        kind: films.length > 1 ? `LOOK ${i + 1}` : "LOOK",
+        label: getStock(l.film)?.name ?? l.film,
+        tab: "film",
+        open: () => onFilmLayer(i),
+        remove: () => onRemoveFilm(i),
+        active: filmTab && films.length > 1 && i === filmLayer,
+      });
+    });
+  looks(0);
   if (r.block > 1) {
     layers.push({ key: "size", kind: "SIZE", label: `${r.block}px`, tab: "pixel", remove: () => set({ block: 1 }) });
   }
@@ -66,18 +83,7 @@ export function Layers({
       });
     }
   }
-  const films = filmLayers(r);
-  films.forEach((l, i) => {
-    layers.push({
-      key: `film${i}`,
-      kind: films.length > 1 ? `FILM ${i + 1}` : "FILM",
-      label: getStock(l.film)?.name ?? l.film,
-      tab: "film",
-      open: () => onFilmLayer(i),
-      remove: () => onRemoveFilm(i),
-      active: filmTab && films.length > 1 && i === filmLayer,
-    });
-  });
+  looks(1);
   if (hasTexture) {
     layers.push({
       key: "texture",
@@ -87,6 +93,7 @@ export function Layers({
       remove: onClearTexture,
     });
   }
+  looks(2);
   if (!layers.length) return null;
   return (
     <div className="layers" aria-label="Applied layers">

@@ -16,21 +16,21 @@ const display = VT323({
 });
 
 export const metadata: Metadata = {
-  title: "PIXEL — film & pixel looks for your photos",
+  title: "LORES — film, screen & pixel looks for your photos",
   description:
-    "63 vintage film looks and authentic pixel art for your photos — previewed on your own image, rendered on your GPU. No upload, no account, no watermark.",
-  metadataBase: new URL("https://pixel.amoghbajpai.com"),
+    "100+ looks for your photos — film stocks, CRTs, receipts, depth maps, datamosh and real pixel art — previewed on your own image, rendered on your device. No upload, no account, no watermark.",
+  metadataBase: new URL("https://lores.amoghbajpai.com"),
   openGraph: {
-    title: "PIXEL — film & pixel looks",
-    description: "Vintage film looks and pixel art for your photos. Runs in your browser.",
-    url: "https://pixel.amoghbajpai.com",
-    siteName: "PIXEL",
+    title: "LORES — film, screen & pixel looks",
+    description: "Film, screen, glitch and pixel looks for your photos. Runs on your device.",
+    url: "https://lores.amoghbajpai.com",
+    siteName: "LORES",
     type: "website",
   },
   twitter: {
     card: "summary_large_image",
-    title: "PIXEL — film & pixel looks",
-    description: "Vintage film looks and pixel art for your photos. Runs in your browser.",
+    title: "LORES — film, screen & pixel looks",
+    description: "Film, screen, glitch and pixel looks for your photos. Runs on your device.",
   },
   icons: { icon: "/favicon.svg" },
 };

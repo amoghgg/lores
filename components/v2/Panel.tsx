@@ -4,7 +4,7 @@ import { useRef, useState } from "react";
 import { Thumb } from "./Thumb";
 import { Range } from "./Range";
 import { PALETTES } from "@/lib/palettes";
-import { FILM_CATEGORIES, FILM_STOCKS, getStock } from "@/lib/filmStocks";
+import { FILM_CATEGORIES, FILM_STOCKS, HERO_LOOKS, getStock } from "@/lib/filmStocks";
 import {
   BLENDS,
   BLOCKS,
@@ -40,7 +40,7 @@ const pct = (v: number) => `${Math.round(v * 100)}%`;
 
 export function Tabs({ tab, onTab }: { tab: Tab; onTab: (t: Tab) => void }) {
   const items: { id: Tab; label: string }[] = [
-    { id: "film", label: "FILM" },
+    { id: "film", label: "LOOKS" },
     { id: "pixel", label: "PIXEL" },
     { id: "more", label: "MORE" },
   ];
@@ -87,6 +87,7 @@ type LooksProps = {
 
 export function Looks(p: LooksProps) {
   const { recipe: r, set, epoch } = p;
+  const [moreOpen, setMoreOpen] = useState(false);
   const hoverT = useRef<number | null>(null);
   const hover = (next: Recipe | null) => {
     if (hoverT.current) window.clearTimeout(hoverT.current);
@@ -106,8 +107,16 @@ export function Looks(p: LooksProps) {
 
   if (p.tab === "film") {
     const faves = FILM_STOCKS.filter((s) => p.favorites.includes(s.id));
-    const cat = p.filmCat === "faves" && !faves.length ? FILM_CATEGORIES[0].id : p.filmCat;
-    const list = cat === "faves" ? faves : FILM_STOCKS.filter((s) => s.category === cat);
+    const cat = p.filmCat === "faves" && !faves.length ? "best" : p.filmCat;
+    const best = cat === "best";
+    const list =
+      cat === "faves"
+        ? faves
+        : best
+        ? HERO_LOOKS.map((id) => getStock(id)!).filter(Boolean)
+        : FILM_STOCKS.filter((s) => s.category === cat);
+    // The families stay folded away until asked for (or one is in use).
+    const showFamilies = moreOpen || (!best && cat !== "faves");
     const stack = filmLayers(r);
     const active = stack[p.films.layer] as FilmLayer | undefined;
     // PIXEL-tab effects sit on top of every film look. Say so, plainly,
@@ -120,7 +129,7 @@ export function Looks(p: LooksProps) {
         {pixelBits.length > 0 && p.onClearPixel && (
           <div className="stack-note" role="status">
             <span>
-              <b>{pixelBits.join(" + ")}</b> from the PIXEL tab {pixelBits.length > 1 ? "are" : "is"} on top of every look below.
+              <b>{pixelBits.join(" + ")}</b> from the PIXEL tab {pixelBits.length > 1 ? "are" : "is"} applied under every look below.
             </span>
             <button className="btn-ghost" onClick={p.onClearPixel}>TURN OFF</button>
           </div>
@@ -131,12 +140,29 @@ export function Looks(p: LooksProps) {
               ★ SAVED
             </button>
           )}
-          {FILM_CATEGORIES.map((c) => (
-            <button key={c.id} className={`chip ${cat === c.id ? "chip-on" : ""}`} onClick={() => p.onFilmCat(c.id)}>
-              {c.label}
-            </button>
-          ))}
+          <button className={`chip ${best ? "chip-on" : ""}`} onClick={() => p.onFilmCat("best")}>
+            BEST
+          </button>
+          <button
+            className={`chip chip-more ${showFamilies ? "chip-open" : ""}`}
+            aria-expanded={showFamilies}
+            onClick={() => {
+              if (showFamilies && !best && cat !== "faves") p.onFilmCat("best");
+              setMoreOpen(!showFamilies);
+            }}
+          >
+            MORE LOOKS {showFamilies ? "▴" : "▾"}
+          </button>
         </div>
+        {showFamilies && (
+          <div className="chips chips-families">
+            {FILM_CATEGORIES.map((c) => (
+              <button key={c.id} className={`chip ${cat === c.id ? "chip-on" : ""}`} onClick={() => p.onFilmCat(c.id)}>
+                {c.label}
+              </button>
+            ))}
+          </div>
+        )}
         <div className="strip strip-grid">
           <Thumb {...ft("none")} label="NONE" selected={!active} onSelect={() => p.films.pick("none")} />
           {list.map((s) => {
@@ -146,6 +172,7 @@ export function Looks(p: LooksProps) {
                 key={s.id}
                 {...ft(s.id)}
                 label={s.name}
+                sub={best ? s.hint : undefined}
                 starred={p.favorites.includes(s.id)}
                 selected={active?.film === s.id}
                 badge={stack.length > 1 && at.length ? at.join("·") : undefined}
@@ -295,7 +322,7 @@ export function Now({ tab, recipe: r, set, films, favorites, onToggleFavorite, h
     const s = L ? getStock(L.film) : undefined;
     const live = (patch: Partial<FilmLayer>) => films.patch(patch, false);
     const commit = (patch: Partial<FilmLayer>) => films.patch(patch, true);
-    title = s ? (stack.length > 1 ? `${films.layer + 1}. ${s.name}` : s.name) : "NO FILM";
+    title = s ? (stack.length > 1 ? `${films.layer + 1}. ${s.name}` : s.name) : "NO LOOK";
     sub = s
       ? stack.length > 1
         ? `Layer ${films.layer + 1} of ${stack.length} · tap a look to swap it, ＋ to add one`

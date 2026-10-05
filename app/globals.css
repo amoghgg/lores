@@ -839,6 +839,23 @@ input[type="range"],
   color: rgb(var(--lime));
 }
 
+.thumb-sub {
+  font-size: 10px;
+  line-height: 1.25;
+  color: rgba(240, 240, 234, 0.78);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.chips-families {
+  margin-top: -2px;
+  padding-left: 10px;
+  border-left: 2px solid rgb(var(--ink-400));
+}
+.chip-open {
+  border-color: rgb(var(--ink-700));
+}
+
 /* Film thumbs: ＋ stacks the look as another layer; badge = its place in the stack. */
 .thumb-plus {
   position: absolute;

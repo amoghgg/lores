@@ -108,9 +108,31 @@ export function filmLayers(r: Recipe): FilmLayer[] {
   return all.filter((l) => l.film !== "none");
 }
 
-/** Recipe with its film stack replaced by `layers` (bottom first). */
+/**
+ * Where a look runs in the engine: 0 = restyle (redraws the photo itself,
+ * before anything else), 1 = grade (colour, grain, light), 2 = screen (CRT,
+ * receipt, 1-bit, blob tracking — on the finished frame).
+ */
+export function stageOf(film: string): 0 | 1 | 2 {
+  const s = getStock(film)?.recipe;
+  if (!s) return 1;
+  if (s.stylize !== "none") return 0;
+  if (s.fx !== "none") return 2;
+  return 1;
+}
+
+/**
+ * Recipe with its film stack replaced by `layers`. Layers are kept in the
+ * order the engine applies them (restyle → grade → screen; stable within a
+ * stage), so the stack you see is the stack that runs.
+ */
 export function withLayers(r: Recipe, layers: FilmLayer[]): Recipe {
-  const ls = layers.filter((l) => l.film !== "none").slice(0, MAX_FILMS);
+  const ls = layers
+    .filter((l) => l.film !== "none")
+    .map((l, i) => ({ l, i, st: stageOf(l.film) }))
+    .sort((a, b) => a.st - b.st || a.i - b.i)
+    .map((x) => x.l)
+    .slice(0, MAX_FILMS);
   const [first = { ...layerOf(r), film: "none" }, ...rest] = ls;
   return { ...r, ...first, stack: rest };
 }

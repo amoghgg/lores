@@ -9,8 +9,11 @@ const GLYPHS: Record<string, string[]> = {
   X: ["10001", "10001", "01010", "00100", "01010", "10001", "10001"],
   E: ["11111", "10000", "10000", "11110", "10000", "10000", "11111"],
   L: ["10000", "10000", "10000", "10000", "10000", "10000", "11111"],
+  O: ["01110", "10001", "10001", "10001", "10001", "10001", "01110"],
+  R: ["11110", "10001", "10001", "11110", "10100", "10010", "10001"],
+  S: ["01111", "10000", "10000", "01110", "00001", "00001", "11110"],
 };
-const WORD = "PIXEL";
+const WORD = "LORES";
 const COLS = WORD.length * 6 - 1;
 const ROWS = 7;
 
@@ -26,7 +29,7 @@ type Props = {
 /**
  * Home. The photo lives behind the wordmark as a breathing LED matrix; a
  * loupe follows the pointer (or drifts on its own) and shows it sharp.
- * PIXEL twinkles, leans away from the pointer, and scatters when tapped.
+ * LORES twinkles, leans away from the pointer, and scatters when tapped.
  */
 export function Home({ photo, canContinue, onOpen, onEnter }: Props) {
   const bg = useRef<HTMLCanvasElement>(null);
@@ -201,7 +204,7 @@ export function Home({ photo, canContinue, onOpen, onEnter }: Props) {
   const rectOf = (e: React.MouseEvent) => (e.currentTarget as HTMLElement).getBoundingClientRect();
 
   return (
-    <div className="home" onPointerMove={onMove} onPointerLeave={onLeave} role="main" aria-label="PIXEL home">
+    <div className="home" onPointerMove={onMove} onPointerLeave={onLeave} role="main" aria-label="LORES home">
       <canvas ref={bg} className="home-bg" aria-hidden />
       <div className="home-scrim" aria-hidden />
       <div className="home-body">
@@ -209,7 +212,7 @@ export function Home({ photo, canContinue, onOpen, onEnter }: Props) {
           ref={mark as unknown as React.RefObject<HTMLButtonElement>}
           className={`home-mark ${scatter % 2 ? "home-scatter" : ""}`}
           style={{ gridTemplateColumns: `repeat(${COLS}, var(--cell))` }}
-          aria-label="PIXEL"
+          aria-label="LORES"
           onClick={() => {
             setScatter((s) => s + 1);
             window.setTimeout(() => setScatter((s) => s + 1), 650);
@@ -230,7 +233,7 @@ export function Home({ photo, canContinue, onOpen, onEnter }: Props) {
             />
           ))}
         </button>
-        <p className="home-tag">Film looks &amp; pixel art for your photos.</p>
+        <p className="home-tag">Film, screens, glitches &amp; pixel art for your photos.</p>
         <div className="home-cta">
           {canContinue ? (
             <>

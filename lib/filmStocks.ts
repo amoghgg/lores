@@ -2222,7 +2222,7 @@ export const FILM_STOCKS: FilmStock[] = [
     category: "machine",
     meta: "P-FRAME BLOOM · H.264",
     hint: "codec smear",
-    note: "A video with its keyframe deleted: the codec keeps applying motion vectors to a picture that isn't there, so 16-pixel macroblocks drag and bloom across the frame. A still has no motion, so PIXEL invents the vector field — NEW GRAIN rolls a new one.",
+    note: "A video with its keyframe deleted: the codec keeps applying motion vectors to a picture that isn't there, so 16-pixel macroblocks drag and bloom across the frame. A still has no motion, so LORES invents the vector field — NEW GRAIN rolls a new one.",
     stylize: "mosh",
     crunch: 0.5,
   }),
@@ -2237,6 +2237,43 @@ export const FILM_STOCKS: FilmStock[] = [
     crunch: 0.5,
   }),
 ];
+
+/**
+ * The looks shown first (the BEST chip): one or two of the strongest from
+ * every family, so a new user sees the range without wading through 100+.
+ */
+export const HERO_LOOKS = [
+  "portra400",
+  "gold200",
+  "kodachrome64",
+  "cinestill800t",
+  "vision2383",
+  "trix",
+  "sx70",
+  "disposable",
+  "expired",
+  "aerochrome",
+  "golden",
+  "hongkong",
+  "cyanotype",
+  "vhs",
+  "nightshot",
+  "riso",
+  "deepfried",
+  "ps2red",
+  "crt",
+  "receipt",
+  "mac1bit",
+  "depthheat",
+  "blobtrack",
+  "datamosh",
+];
+
+/** Which chip a look lives under: BEST if it's a hero, else its family. */
+export function chipFor(id: string): string {
+  if (HERO_LOOKS.includes(id)) return "best";
+  return getStock(id)?.category ?? "best";
+}
 
 export function getStock(id: string): FilmStock | null {
   return FILM_STOCKS.find((s) => s.id === id) ?? null;
