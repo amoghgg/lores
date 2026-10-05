@@ -1,0 +1,10 @@
+{
+  "redirects": [
+    {
+      "source": "/:path*",
+      "has": [{ "type": "host", "value": "pixel.amoghbajpai.com" }],
+      "destination": "https://lores.amoghbajpai.com/:path*",
+      "permanent": true
+    }
+  ]
+}
