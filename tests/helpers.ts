@@ -24,6 +24,8 @@ export async function enterFresh(page: Page) {
   await page.getByRole("button", { name: /TRY ON CHUCK|CONTINUE/ }).click();
   await expect(page.locator(".home")).toHaveCount(0);
   await expect(page.locator(".now-title")).toBeVisible();
+  // First render (on a machine whose GPU hangs, after the fallback kicks in).
+  await expect(page.locator(".viewer-layer:last-child canvas")).toHaveCount(1, { timeout: 60_000 });
 }
 
 /** The current look as its recipe code (what the app remembers). */

@@ -109,3 +109,24 @@ test("renders without WebGPU (CPU fallback)", async ({ page }) => {
   await waitForChange(page, before, 1.5);
   expect(errors).toEqual([]);
 });
+
+test("environment report (GPU)", async ({ page }) => {
+  const logs: string[] = [];
+  page.on("console", (m) => /\[pixel\]/.test(m.text()) && logs.push(m.text().slice(0, 300)));
+  await page.goto("/");
+  const gpu = await page.evaluate(async () => {
+    if (!navigator.gpu) return "no navigator.gpu";
+    const t0 = performance.now();
+    const race = <T,>(p: Promise<T>) => Promise.race([p, new Promise<"timeout">((r) => setTimeout(() => r("timeout"), 8000))]);
+    const a = await race(navigator.gpu.requestAdapter());
+    if (a === "timeout") return "requestAdapter timed out";
+    if (!a) return "no adapter";
+    const d = await race(a.requestDevice());
+    const info = (a as unknown as { info?: { vendor?: string; architecture?: string; description?: string } }).info;
+    return `${d === "timeout" ? "requestDevice timed out" : "device ok"} in ${Math.round(performance.now() - t0)}ms · ${info?.vendor} ${info?.architecture} ${info?.description}`;
+  });
+  await page.getByRole("button", { name: /TRY ON CHUCK|CONTINUE/ }).click();
+  const t0 = Date.now();
+  await expect(page.locator(".viewer-layer:last-child canvas")).toHaveCount(1, { timeout: 60_000 });
+  console.log(`GPU: ${gpu} · first render ${Date.now() - t0}ms · ${logs.join(" | ") || "no [pixel] logs"}`);
+});
