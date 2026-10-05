@@ -58,3 +58,28 @@ test("video: open, play through a look, save the clip", async ({ page }, info) =
   expect(size).toBeLessThan(3_000_000);
   expect(errors).toEqual([]);
 });
+
+test("video: if H.264 is refused at encode time, it saves WebM instead", async ({ page }, info) => {
+  test.setTimeout(420_000);
+  // Reproduce what CI's Linux Chromium did: the capability check says yes,
+  // then the encoder refuses the H.264 configuration when it starts.
+  await page.addInitScript(() => {
+    const configure = VideoEncoder.prototype.configure;
+    VideoEncoder.prototype.configure = function (config: VideoEncoderConfig) {
+      if (config.codec.startsWith("avc1")) throw new DOMException("refused for this test", "NotSupportedError");
+      return configure.call(this, config);
+    };
+  });
+  await enterFresh(page);
+  await page.setInputFiles("input[type=file] >> nth=0", CLIP);
+  await expect(page.locator(".vbar")).toBeVisible({ timeout: 30_000 });
+  await look(page, "CRT TRINITRON").click();
+  const [dl] = await Promise.all([
+    page.waitForEvent("download", { timeout: 300_000 }),
+    page.locator(".bar-save .btn-primary").first().click(),
+  ]);
+  expect(dl.suggestedFilename()).toMatch(/\.webm$/);
+  const file = info.outputPath(dl.suggestedFilename());
+  await dl.saveAs(file);
+  expect(fs.readFileSync(file).subarray(0, 4).toString("hex")).toBe("1a45dfa3");
+});

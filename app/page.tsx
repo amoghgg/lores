@@ -743,7 +743,12 @@ export default function Page() {
           const r = await processBest(frame, settingsRef.current, overlayRef.current, filmRef.current, "main", { time, session });
           return r.canvas as HTMLCanvasElement;
         },
-        (p, media) => setVideoJob((j) => (j ? { ...j, progress: p, media } : j))
+        (p, media) => setVideoJob((j) => (j ? { ...j, progress: p, media } : j)),
+        // Retrying in another format: datamosh/tracking start from frame one again.
+        () => {
+          session.reset();
+          setVideoJob((j) => (j ? { ...j, progress: 0, media: 0, started: performance.now() } : j));
+        }
       );
       setVideoJob({ progress: 0, media: 0, duration: job.duration, started: performance.now(), cancel: job.cancel });
       const out = await job.done;
