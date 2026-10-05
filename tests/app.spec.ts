@@ -152,20 +152,26 @@ test("browsing looks never downloads an AI model; choosing one does", async ({ p
 
 test("datamosh strength changes how much it moshes", async ({ page }) => {
   await enterFresh(page);
+  // Wait for each render to land (slow on CI's software GPU), not a fixed time.
+  let prev = await fingerprint(page);
   await look(page, "DATAMOSH").click();
+  await page.mouse.move(2, 2);
+  await waitForChange(page, prev, 0.05, 90_000);
   const slider = page.locator(".range input").first();
   const set = async (f: number) => {
+    prev = await fingerprint(page);
     const b = (await slider.boundingBox())!;
     await page.mouse.click(b.x + b.width * f, b.y + b.height / 2);
     await page.mouse.move(2, 2);
-    await page.waitForTimeout(2500);
+    await waitForChange(page, prev, 0.05, 90_000);
     return fingerprint(page);
   };
   const low = await set(0.15);
   const high = await set(0.99);
+  prev = high;
   await look(page, "NONE").click();
   await page.mouse.move(2, 2);
-  await page.waitForTimeout(2000);
+  await waitForChange(page, prev, 0.05, 90_000);
   const none = await fingerprint(page);
   const maxDiff = (a: number[], b: number[]) => a.reduce((m, v, i) => Math.max(m, Math.abs(v - b[i])), 0);
   console.log(`mosh low: mean ${meanDiff(low, none).toFixed(1)} max ${maxDiff(low, none)} · high: mean ${meanDiff(high, none).toFixed(1)}`);
