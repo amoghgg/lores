@@ -132,7 +132,7 @@ class ThumbRenderer {
     const { stylizedSource } = await import("./stylize");
     const key =
       `${view}${size}|` +
-      styled.map((f) => `${f.recipe.stylize}.${f.recipe.stylizeBg}.${f.controls.amount.toFixed(2)}`).join("+");
+      styled.map((f) => `${f.recipe.stylize}.${f.recipe.stylizeBg}.${f.controls.amount.toFixed(2)}.${f.controls.seed}`).join("+");
     let bmp = this.proxies.get(key);
     if (!bmp) {
       // Restyles chain in stack order, each on the previous one's result.

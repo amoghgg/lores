@@ -266,7 +266,7 @@ type NowProps = {
 };
 
 /** What a look writes on the photo, for its on/off tick — null if nothing. */
-function textLabel(hud: string, dateStamp: boolean): string | null {
+function textLabel({ hud, dateStamp, fx }: { hud: string; dateStamp: boolean; fx: string }): string | null {
   const parts: Record<string, string> = {
     rec: "REC · NIGHTSHOT · TIMESTAMP",
     vhs: "PLAY · DATE · TIME",
@@ -274,7 +274,7 @@ function textLabel(hud: string, dateStamp: boolean): string | null {
     thermal: "TEMPERATURE + CROSSHAIR",
     witch: "TRIANGLE SYMBOL",
   };
-  const bits = [parts[hud], dateStamp ? "DATE STAMP" : undefined].filter(Boolean);
+  const bits = [parts[hud], dateStamp ? "DATE STAMP" : undefined, fx === "blob" ? "BLOB IDS + COORDINATES" : undefined].filter(Boolean);
   return bits.length ? bits.join(" · ") : null;
 }
 
@@ -311,7 +311,7 @@ export function Now({ tab, recipe: r, set, films, favorites, onToggleFavorite, h
           {favorites.includes(s.id) ? "★" : "☆"}
         </button>
       );
-      const writing = textLabel(s.recipe.hud, s.recipe.dateStamp);
+      const writing = textLabel(s.recipe);
       const textOn = r.text !== false;
       main = (
         <>
@@ -337,7 +337,7 @@ export function Now({ tab, recipe: r, set, films, favorites, onToggleFavorite, h
           <Range label="LIGHT LEAK" value={L.leak} min={0} max={2} step={0.01} reset={1} format={pct}
             onChange={(leak) => live({ leak })} onCommit={(leak) => commit({ leak })} />
           <div className="now-buttons">
-            {s.recipe.border !== "none" && (
+            {(s.recipe.border !== "none" || s.recipe.fx === "receipt") && (
               <button className={`btn-ghost ${L.frame ? "btn-on" : ""}`} onClick={() => commit({ frame: !L.frame })}>
                 {L.frame ? "■" : "□"} FRAME
               </button>

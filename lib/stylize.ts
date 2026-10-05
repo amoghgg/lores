@@ -4,7 +4,9 @@
 // cached per (source, look), and hands a restyled bitmap to the normal
 // pipeline — so grain, the PIXEL tab and saving all still apply on top.
 
-export type StylizeKind = "none" | "ps2" | "airbrush" | "sticker" | "impasto";
+import type { FilmRecipe } from "./film";
+
+export type StylizeKind = FilmRecipe["stylize"];
 
 type Src = ImageBitmap | HTMLImageElement | HTMLCanvasElement;
 
@@ -669,6 +671,276 @@ function impasto(src: Src, w: number, h: number): ImageData {
 }
 
 // ───────────────────────────────────────────────────────────────────────────
+// Depth — Depth Anything V2 Small (Apache-2.0) via Transformers.js, on the
+// device: WebGPU when the GPU can do f16, else WebAssembly. Loaded only the
+// first time a depth look is used, then kept; one depth map per photo.
+// ───────────────────────────────────────────────────────────────────────────
+
+const TRANSFORMERS = "https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.3.0/+esm";
+const DEPTH_MODEL = "onnx-community/depth-anything-v2-small";
+// A real browser import the bundler leaves alone.
+const importUrl = new Function("u", "return import(u)") as (u: string) => Promise<any>; // eslint-disable-line @typescript-eslint/no-explicit-any
+
+type DepthPipe = { run: (c: HTMLCanvasElement) => Promise<{ data: ArrayLike<number>; w: number; h: number; ch: number }> };
+let depthPipe: Promise<DepthPipe> | null = null;
+let depthQueue: Promise<unknown> = Promise.resolve();
+
+function getDepth(): Promise<DepthPipe> {
+  if (!depthPipe) {
+    depthPipe = (async () => {
+      const t = await importUrl(TRANSFORMERS);
+      const gpu = (navigator as unknown as { gpu?: { requestAdapter(): Promise<{ features: Set<string> } | null> } }).gpu;
+      const f16 = gpu ? !!(await gpu.requestAdapter().catch(() => null))?.features?.has("shader-f16") : false;
+      const tries = [...(f16 ? [{ device: "webgpu", dtype: "q4f16" }] : []), { device: "wasm", dtype: "q8" }];
+      let lastErr: unknown = null;
+      for (const opts of tries) {
+        try {
+          const pipe = await t.pipeline("depth-estimation", DEPTH_MODEL, opts);
+          return {
+            run: async (c: HTMLCanvasElement) => {
+              const out = await pipe(t.RawImage.fromCanvas(c));
+              const d = (Array.isArray(out) ? out[0] : out).depth;
+              return { data: d.data, w: d.width, h: d.height, ch: d.channels };
+            },
+          };
+        } catch (err) {
+          lastErr = err;
+          console.warn(`[pixel] depth model failed on ${opts.device}`, err);
+        }
+      }
+      throw lastErr ?? new Error("depth model unavailable");
+    })();
+    depthPipe.catch(() => (depthPipe = null));
+  }
+  return depthPipe;
+}
+
+const depthMaps = new WeakMap<object, Promise<Float32Array>>();
+
+/** Depth at w×h, 0 = far … 1 = near. */
+function depthOf(src: Src, w: number, h: number): Promise<Float32Array> {
+  const hit = depthMaps.get(src);
+  if (hit) return hit;
+  const job = (async () => {
+    const { canvas } = draw(src, w, h);
+    let raw: Float32Array;
+    try {
+      const pipe = await getDepth();
+      const run = depthQueue.then(() => pipe.run(canvas));
+      depthQueue = run.catch(() => undefined);
+      const r = await run;
+      // Resample the model's map to the working size.
+      const m = document.createElement("canvas");
+      m.width = r.w;
+      m.height = r.h;
+      const mx = m.getContext("2d", { willReadFrequently: true })!;
+      const img = mx.createImageData(r.w, r.h);
+      for (let i = 0; i < r.w * r.h; i++) {
+        const v = r.data[i * r.ch];
+        img.data[i * 4] = img.data[i * 4 + 1] = img.data[i * 4 + 2] = v;
+        img.data[i * 4 + 3] = 255;
+      }
+      mx.putImageData(img, 0, 0);
+      const { data } = draw(m, w, h);
+      raw = new Float32Array(w * h);
+      for (let i = 0; i < raw.length; i++) raw[i] = data[i * 4] / 255;
+    } catch (err) {
+      // Flag and carry on: without the model, a person is near and the
+      // frame recedes upwards — rough, but the look still renders.
+      console.warn("[pixel] depth model unavailable — using a rough person/ground estimate", err);
+      const mask = await personMask(canvas);
+      raw = new Float32Array(w * h);
+      for (let y = 0; y < h; y++)
+        for (let x = 0; x < w; x++) raw[y * w + x] = 0.15 + 0.45 * (y / h) + (mask?.[y * w + x] ? 0.4 : 0);
+      raw = gauss1(raw, w, h, Math.max(w, h) * 0.01);
+    }
+    // Percentile stretch so every photo uses the whole range.
+    const sorted = Float32Array.from(raw).sort();
+    const lo = sorted[Math.floor(sorted.length * 0.01)];
+    const hi = Math.max(lo + 1e-3, sorted[Math.floor(sorted.length * 0.995)]);
+    for (let i = 0; i < raw.length; i++) raw[i] = Math.min(1, Math.max(0, (raw[i] - lo) / (hi - lo)));
+    return raw;
+  })();
+  depthMaps.set(src, job);
+  job.catch(() => depthMaps.delete(src));
+  return job;
+}
+
+/** Google's Turbo colormap (polynomial fit, Mikhailov 2019). */
+function turbo(t: number): [number, number, number] {
+  const x = Math.min(1, Math.max(0, t));
+  const r = 0.13572138 + x * (4.6153926 + x * (-42.66032258 + x * (132.13108234 + x * (-152.94239396 + x * 59.28637943))));
+  const g = 0.09140261 + x * (2.19418839 + x * (4.84296658 + x * (-14.18503333 + x * (4.27729857 + x * 2.82956604))));
+  const b = 0.1066733 + x * (12.64194608 + x * (-60.58204836 + x * (110.36276771 + x * (-89.90310912 + x * 27.34824973))));
+  return [r * 255, g * 255, b * 255];
+}
+
+async function depthLook(src: Src, w: number, h: number, kind: StylizeKind, bg: string): Promise<ImageData> {
+  const D = await depthOf(src, w, h);
+  const out = new ImageData(w, h);
+  const o = out.data;
+  if (kind === "depth") {
+    for (let i = 0; i < D.length; i++) {
+      const v = Math.pow(D[i], 1.1) * 255;
+      o[i * 4] = o[i * 4 + 1] = o[i * 4 + 2] = v;
+      o[i * 4 + 3] = 255;
+    }
+  } else if (kind === "depthheat") {
+    for (let i = 0; i < D.length; i++) {
+      const [r, g, b] = turbo(D[i]);
+      o[i * 4] = r;
+      o[i * 4 + 1] = g;
+      o[i * 4 + 2] = b;
+      o[i * 4 + 3] = 255;
+    }
+  } else if (kind === "depthlines") {
+    // Topographic iso-depth lines, anti-aliased by the local gradient.
+    const N = 30;
+    const ink = hexRGB(bg);
+    for (let y = 0; y < h; y++)
+      for (let x = 0; x < w; x++) {
+        const i = y * w + x;
+        const f = D[i] * N;
+        const gx = (D[Math.min(w - 1, x + 1) + y * w] - D[Math.max(0, x - 1) + y * w]) * N * 0.5;
+        const gy = (D[x + Math.min(h - 1, y + 1) * w] - D[x + Math.max(0, y - 1) * w]) * N * 0.5;
+        const g = Math.max(1e-4, Math.hypot(gx, gy));
+        const fr = f - Math.floor(f);
+        // Flat plateaus (clamped near/far) have no contours to draw.
+        const flat = g < 0.004 || D[i] <= 0.001 || D[i] >= 0.999;
+        const dist = Math.min(fr, 1 - fr) / g; // in pixels
+        const major = Math.round(f) % 5 === 0;
+        const a = flat ? 0 : Math.max(0, 1 - dist / (major ? 1.4 : 0.9)) * (major ? 1 : 0.7);
+        const base = 8 + D[i] * 22;
+        o[i * 4] = base + (ink[0] - base) * a;
+        o[i * 4 + 1] = base + (ink[1] - base) * a;
+        o[i * 4 + 2] = base + (ink[2] - base) * a;
+        o[i * 4 + 3] = 255;
+      }
+  } else {
+    // Haze: the far half of the scene sinks into atmosphere.
+    const { data } = draw(src, w, h);
+    const fog = hexRGB(bg);
+    for (let i = 0; i < D.length; i++) {
+      const a = Math.pow(1 - D[i], 1.6) * 0.88;
+      o[i * 4] = data[i * 4] + (fog[0] - data[i * 4]) * a;
+      o[i * 4 + 1] = data[i * 4 + 1] + (fog[1] - data[i * 4 + 1]) * a;
+      o[i * 4 + 2] = data[i * 4 + 2] + (fog[2] - data[i * 4 + 2]) * a;
+      o[i * 4 + 3] = 255;
+    }
+  }
+  return out;
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Datamosh — a still has no motion, so we invent a motion-vector field (one
+// vector per 16px macroblock, flowing like a camera move) and apply it over
+// and over to the same picture: P-frame bloom. Chroma then goes blocky, the
+// way 4:2:0 macroblocks smear colour, and a real JPEG crunch follows.
+// ───────────────────────────────────────────────────────────────────────────
+
+function mosh(src: Src, w: number, h: number, seed: number, melt: boolean): ImageData {
+  const { data } = draw(src, w, h);
+  const B = Math.max(8, Math.round(Math.max(w, h) / 60));
+  const bw = Math.ceil(w / B);
+  const bh = Math.ceil(h / B);
+  const rand = rng(seed * 7919 + 13);
+  // Smooth random field: a few big swirls.
+  const waves = Array.from({ length: 4 }, () => ({
+    fx: 0.5 + rand() * 2.5,
+    fy: 0.5 + rand() * 2.5,
+    ph: rand() * 6.283,
+    a: 0.5 + rand(),
+  }));
+  const vx = new Float32Array(bw * bh);
+  const vy = new Float32Array(bw * bh);
+  const on = new Uint8Array(bw * bh);
+  const step = Math.max(1.5, Math.max(w, h) * 0.004);
+  const bandA = rand();
+  const bandB = rand();
+  for (let by = 0; by < bh; by++)
+    for (let bx = 0; bx < bw; bx++) {
+      const u = bx / bw;
+      const v = by / bh;
+      let ang = 0;
+      let mag = 0;
+      for (const wv of waves) {
+        ang += wv.a * Math.sin(u * wv.fx * 6.283 + wv.ph) * Math.cos(v * wv.fy * 6.283 - wv.ph);
+        mag += wv.a * Math.cos(u * wv.fy * 3.1 + v * wv.fx * 3.1 + wv.ph);
+      }
+      const k = by * bw + bx;
+      if (melt) {
+        // Everything drips down, swaying a little.
+        vx[k] = Math.sin(ang) * step * 0.35;
+        vy[k] = -step * (0.6 + 0.5 * Math.abs(Math.cos(ang)));
+      } else {
+        vx[k] = Math.cos(ang * 1.7) * step * (0.6 + Math.abs(mag) * 0.4);
+        vy[k] = Math.sin(ang * 1.7) * step * (0.6 + Math.abs(mag) * 0.4);
+      }
+      // Which macroblocks lost their I-frame: blobs plus a couple of bands.
+      const inBand = Math.abs(v - bandA) < 0.09 || Math.abs(v - bandB) < 0.05;
+      on[k] = melt ? (mag > -0.4 ? 1 : 0) : mag > 0.1 || inBand ? 1 : 0;
+    }
+  let cur = new Uint8ClampedArray(data);
+  let nxt = new Uint8ClampedArray(data);
+  const iters = melt ? 26 : 16;
+  for (let it = 0; it < iters; it++) {
+    nxt.set(cur);
+    for (let by = 0; by < bh; by++)
+      for (let bx = 0; bx < bw; bx++) {
+        const k = by * bw + bx;
+        if (!on[k]) continue;
+        const dx = Math.round(vx[k]);
+        const dy = Math.round(vy[k]);
+        const x1 = Math.min(w, (bx + 1) * B);
+        const y1 = Math.min(h, (by + 1) * B);
+        for (let y = by * B; y < y1; y++) {
+          const sy = Math.min(h - 1, Math.max(0, y + dy));
+          for (let x = bx * B; x < x1; x++) {
+            const sx = Math.min(w - 1, Math.max(0, x + dx));
+            const s4 = (sy * w + sx) * 4;
+            const d4 = (y * w + x) * 4;
+            nxt[d4] = cur[s4];
+            nxt[d4 + 1] = cur[s4 + 1];
+            nxt[d4 + 2] = cur[s4 + 2];
+          }
+        }
+      }
+    const t = cur;
+    cur = nxt;
+    nxt = t;
+  }
+  // Blocky chroma inside the moshed blocks: keep luma per pixel, colour per 8px.
+  const C = Math.max(4, B >> 1);
+  for (let cy = 0; cy < h; cy += C)
+    for (let cx = 0; cx < w; cx += C) {
+      if (!on[Math.min(bh - 1, (cy / B) | 0) * bw + Math.min(bw - 1, (cx / B) | 0)]) continue;
+      let cb = 0;
+      let cr = 0;
+      let n = 0;
+      const x1 = Math.min(w, cx + C);
+      const y1 = Math.min(h, cy + C);
+      for (let y = cy; y < y1; y++)
+        for (let x = cx; x < x1; x++) {
+          const i = (y * w + x) * 4;
+          cb += -0.1687 * cur[i] - 0.3313 * cur[i + 1] + 0.5 * cur[i + 2];
+          cr += 0.5 * cur[i] - 0.4187 * cur[i + 1] - 0.0813 * cur[i + 2];
+          n++;
+        }
+      cb = (cb / n) * 1.35;
+      cr = (cr / n) * 1.35;
+      for (let y = cy; y < y1; y++)
+        for (let x = cx; x < x1; x++) {
+          const i = (y * w + x) * 4;
+          const Y = 0.299 * cur[i] + 0.587 * cur[i + 1] + 0.114 * cur[i + 2];
+          cur[i] = Y + 1.402 * cr;
+          cur[i + 1] = Y - 0.344136 * cb - 0.714136 * cr;
+          cur[i + 2] = Y + 1.772 * cb;
+        }
+    }
+  return new ImageData(cur, w, h);
+}
+
+// ───────────────────────────────────────────────────────────────────────────
 // Public: cached restyle + strength blend
 // ───────────────────────────────────────────────────────────────────────────
 
@@ -680,7 +952,7 @@ function restyle(src: Src, kind: StylizeKind, bg: string, seed: number): Promise
     m = new Map();
     cache.set(src, m);
   }
-  const key = `${kind}|${bg}`;
+  const key = kind === "mosh" || kind === "melt" ? `${kind}|${seed}` : `${kind}|${bg}`;
   const hit = m.get(key);
   if (hit) return hit;
   const job = (async () => {
@@ -692,7 +964,9 @@ function restyle(src: Src, kind: StylizeKind, bg: string, seed: number): Promise
     if (kind === "ps2") img = await lowPoly(src, w, h, true, bg, seed);
     else if (kind === "airbrush") img = await lowPoly(src, w, h, false, bg, seed);
     else if (kind === "sticker") img = await sticker(src, w, h);
-    else img = impasto(src, w, h);
+    else if (kind === "impasto") img = impasto(src, w, h);
+    else if (kind === "mosh" || kind === "melt") img = mosh(src, w, h, seed, kind === "melt");
+    else img = await depthLook(src, w, h, kind, bg);
     // Back up to the source size so the rest of the pipeline is unchanged.
     const small = await createImageBitmap(img);
     const big = await createImageBitmap(small, { resizeWidth: sw, resizeHeight: sh, resizeQuality: "high" });

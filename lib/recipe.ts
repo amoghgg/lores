@@ -185,7 +185,7 @@ export function layerFilm(l: FilmLayer, text = true): FilmInput | null {
     frame: l.frame,
     seed: l.seed,
   };
-  const recipe = !text ? { ...stock.recipe, hud: "none" as const, dateStamp: false } : stock.recipe;
+  const recipe = !text ? { ...stock.recipe, hud: "none" as const, dateStamp: false, fxLabels: false } : stock.recipe;
   return { recipe, controls };
 }
 

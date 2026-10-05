@@ -295,7 +295,7 @@ export function asFilms(film: FilmInput | FilmInput[] | null | undefined): FilmI
 }
 
 async function runPost(canvas: HTMLCanvasElement, films: FilmInput[]) {
-  for (const f of films) if (needsPost(f.recipe)) await postFilm(canvas, f.recipe, f.controls.seed);
+  for (const f of films) if (needsPost(f.recipe)) await postFilm(canvas, f.recipe, f.controls);
 }
 
 async function renderBest(

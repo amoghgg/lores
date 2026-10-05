@@ -126,9 +126,27 @@ export type FilmRecipe = {
   /** Real JPEG re-encodes after rendering, 0..1 (1 = deep-fried). */
   crunch: number;
   /** Source restyle before the film pass (lib/stylize.ts). */
-  stylize: "none" | "ps2" | "airbrush" | "sticker" | "impasto";
+  stylize:
+    | "none"
+    | "ps2"
+    | "airbrush"
+    | "sticker"
+    | "impasto"
+    | "depth"
+    | "depthheat"
+    | "depthlines"
+    | "depthhaze"
+    | "mosh"
+    | "melt";
   /** Flat background for cut-out restyles. */
   stylizeBg: string;
+  /** Screen / print / machine-vision effect on the finished frame (lib/fx.ts). */
+  fx: "none" | "crt" | "receipt" | "onebit" | "blob";
+  fxMode: string;
+  fxInk: string;
+  fxPaper: string;
+  fxScale: number;
+  fxLabels: boolean;
 };
 
 export const NEUTRAL: FilmRecipe = {
@@ -192,6 +210,12 @@ export const NEUTRAL: FilmRecipe = {
   crunch: 0,
   stylize: "none",
   stylizeBg: "#ec1c1c",
+  fx: "none",
+  fxMode: "",
+  fxInk: "#000000",
+  fxPaper: "#ffffff",
+  fxScale: 512,
+  fxLabels: true,
 };
 
 /** User-facing multipliers layered on top of a stock's recipe. */
