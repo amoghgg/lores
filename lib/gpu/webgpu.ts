@@ -1301,9 +1301,11 @@ export class WebGPUPipeline {
   static async create(): Promise<WebGPUPipeline | null> {
     if (typeof navigator === "undefined" || !navigator.gpu) return null;
     try {
-      const adapter = await navigator.gpu.requestAdapter();
+      // Some machines expose WebGPU but never answer (software adapters,
+      // blocklisted drivers) — give up quickly and render on the CPU.
+      const adapter = await withTimeout(navigator.gpu.requestAdapter(), 5000, "requestAdapter");
       if (!adapter) return null;
-      const device = await adapter.requestDevice();
+      const device = await withTimeout(adapter.requestDevice(), 5000, "requestDevice");
       const format = navigator.gpu.getPreferredCanvasFormat();
       const pipeline = new WebGPUPipeline(device, format);
       pipeline.compile();
@@ -2427,6 +2429,22 @@ export type OverlayParams = {
  * so small proxy renders never thrash the main preview's texture sizes.
  */
 let thumbPromise: Promise<WebGPUPipeline | null> | null = null;
+export function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
+  let t: ReturnType<typeof setTimeout>;
+  return Promise.race([
+    p.finally(() => clearTimeout(t)),
+    new Promise<never>((_, reject) => {
+      t = setTimeout(() => reject(new Error(`${what} timed out after ${ms}ms`)), ms);
+    }),
+  ]);
+}
+
+/** A GPU that hung or lost its device: stop using it, render on the CPU. */
+export function markGPUBroken(target: "main" | "thumb") {
+  if (target === "thumb") thumbPromise = Promise.resolve(null);
+  else pipelinePromise = Promise.resolve(null);
+}
+
 export function getThumbGPU(): Promise<WebGPUPipeline | null> {
   if (!thumbPromise) thumbPromise = WebGPUPipeline.create();
   return thumbPromise;

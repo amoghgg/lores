@@ -2,7 +2,7 @@
 // saving with the recipe inside the PNG, persistence, links, ⌘K, theme.
 import { test, expect } from "@playwright/test";
 import fs from "node:fs";
-import { enterFresh, look, nowTitle, openFamily, recipe, trackErrors, waitRecipe } from "./helpers";
+import { enterFresh, fingerprint, look, nowTitle, openFamily, recipe, trackErrors, waitForChange, waitRecipe } from "./helpers";
 
 test("home → app, brand and default look", async ({ page }) => {
   const errors = trackErrors(page);
@@ -96,5 +96,16 @@ test("shared link applies and cleans; ⌘K; theme persists", async ({ page }) =>
   await expect.poll(() => page.url()).not.toContain("#");
   await waitRecipe(page, (c) => c.includes("film:velvia50"));
   expect(await page.evaluate(() => document.documentElement.dataset.theme)).toBe(theme);
+  expect(errors).toEqual([]);
+});
+
+test("renders without WebGPU (CPU fallback)", async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => Object.defineProperty(navigator, "gpu", { value: undefined, configurable: true }));
+  await enterFresh(page);
+  await expect(page.locator(".viewer-layer:last-child canvas")).toHaveCount(1);
+  const before = await fingerprint(page);
+  await look(page, "TRI-X 400").click();
+  await waitForChange(page, before, 1.5);
   expect(errors).toEqual([]);
 });

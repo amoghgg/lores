@@ -305,7 +305,7 @@ async function renderBest(
   films: FilmInput[],
   target: "main" | "thumb"
 ): Promise<ProcessResult & { engine: "gpu" | "cpu" }> {
-  const { needsCpuGrid, getWebGPU, getThumbGPU } = await import("./gpu/webgpu");
+  const { needsCpuGrid, getWebGPU, getThumbGPU, markGPUBroken, withTimeout } = await import("./gpu/webgpu");
   {
     const gpu = await (target === "thumb" ? getThumbGPU() : getWebGPU());
     if (gpu) {
@@ -320,7 +320,9 @@ async function renderBest(
         } else {
           gpu.setOverlayTexture(null);
         }
-        const r = await gpu.process(source, settings, {
+        // A render never takes this long on a working GPU; a hung one would
+        // otherwise leave the photo blank forever.
+        const r = await withTimeout(gpu.process(source, settings, {
           overlay: overlay
             ? {
                 blendMode: overlay.blendBit,
@@ -334,12 +336,13 @@ async function renderBest(
           // every WebGPU compositor / first-frame timing issue, so what you
           // see in the preview is bit-exactly what gets exported.
           readback: true,
-        });
+        }), 15_000, "GPU render");
         cpuGrid?.close();
         await runPost(r.canvas, films);
         return { ...r, engine: "gpu" };
       } catch (err) {
         console.warn("[pixel] GPU pipeline failed, falling back to CPU:", err);
+        if (err instanceof Error && err.message.includes("timed out")) markGPUBroken(target);
       }
     }
   }
