@@ -1533,3 +1533,77 @@ input[type="range"],
   flex: none;
   padding: 6px 10px;
 }
+
+/* ─── Video ──────────────────────────────────────────────────────────── */
+.vbar {
+  position: absolute;
+  left: 50%;
+  top: 12px;
+  transform: translateX(-50%);
+  width: min(520px, calc(100% - 24px));
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 12px 6px 6px;
+  background: rgb(var(--ink-50) / 0.88);
+  border: 1px solid rgb(var(--ink-500));
+  backdrop-filter: blur(6px);
+  z-index: 3;
+}
+.vbar-play {
+  width: 34px;
+  height: 30px;
+  flex: none;
+  font-size: 13px;
+  color: rgb(var(--on-fill));
+  background: rgb(var(--fill));
+}
+.vbar-seek {
+  flex: 1;
+  min-width: 0;
+  accent-color: rgb(var(--lime));
+}
+.vbar-time {
+  flex: none;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: rgb(var(--ink-800));
+}
+.vjob {
+  position: fixed;
+  left: 50%;
+  bottom: calc(24px + env(safe-area-inset-bottom, 0px));
+  transform: translateX(-50%);
+  width: min(420px, calc(100% - 32px));
+  padding: 14px 16px;
+  background: rgb(var(--ink-50));
+  border: 1px solid rgb(var(--ink-500));
+  box-shadow: 0 10px 30px rgb(0 0 0 / 0.35);
+  z-index: 60;
+}
+.vjob-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+}
+.vjob-eta {
+  margin-top: 8px;
+  font-size: 12px;
+  font-weight: 500;
+  color: rgb(var(--ink-700));
+  font-variant-numeric: tabular-nums;
+}
+.vjob-bar {
+  margin-top: 10px;
+  height: 6px;
+  background: rgb(var(--ink-300));
+}
+.vjob-fill {
+  height: 100%;
+  background: rgb(var(--lime));
+  transition: width 0.2s;
+}

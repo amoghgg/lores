@@ -6,6 +6,7 @@
 
 import type { FilmRecipe } from "./film";
 import { markReady } from "./models";
+import type { VideoSession } from "./session";
 
 export type StylizeKind = FilmRecipe["stylize"];
 
@@ -778,8 +779,8 @@ function turbo(t: number): [number, number, number] {
   return [r * 255, g * 255, b * 255];
 }
 
-async function depthLook(src: Src, w: number, h: number, kind: StylizeKind, bg: string): Promise<ImageData> {
-  const D = await depthOf(src, w, h);
+async function depthLook(src: Src, w: number, h: number, kind: StylizeKind, bg: string, depth?: Float32Array): Promise<ImageData> {
+  const D = depth ?? (await depthOf(src, w, h));
   const out = new ImageData(w, h);
   const o = out.data;
   if (kind === "depth") {
@@ -1024,4 +1025,133 @@ export async function stylizedSource(
   ctx.globalAlpha = Math.max(0, amount);
   ctx.drawImage(styled, 0, 0, w, h);
   return { bitmap: await createImageBitmap(c), owned: true };
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Datamosh on video — the real mechanism. For every macroblock that "lost
+// its keyframe" we find where it came from in the previous frame (block
+// matching on luma), then copy the PREVIOUS MOSHED output from there. Real
+// motion now drags stale pixels along, frame after frame: P-frame bloom.
+// Strength = how many blocks lose their keyframe and how much motion is
+// exaggerated. Other blocks show the fresh frame.
+// ───────────────────────────────────────────────────────────────────────────
+
+export async function moshFrame(
+  src: Src,
+  kind: StylizeKind,
+  amount: number,
+  seed: number,
+  session: VideoSession
+): Promise<ImageBitmap> {
+  const [sw, sh] = srcSize(src);
+  const k = Math.min(1, WORK_LONG / Math.max(sw, sh));
+  const w = Math.max(16, Math.round(sw * k));
+  const h = Math.max(16, Math.round(sh * k));
+  const { data } = draw(src, w, h);
+  const luma = new Float32Array(w * h);
+  for (let i = 0; i < luma.length; i++) luma[i] = data[i * 4] * 0.299 + data[i * 4 + 1] * 0.587 + data[i * 4 + 2] * 0.114;
+  const key = `${kind}|${seed}`;
+  const st = session.mosh.get(key);
+  const t = quant(amount);
+  const melt = kind === "melt";
+  const out = new Uint8ClampedArray(data);
+  if (st && st.w === w && st.h === h) {
+    const B = Math.max(8, Math.round(Math.max(w, h) / 60));
+    const bw = Math.ceil(w / B);
+    const bh = Math.ceil(h / B);
+    const rand = rng(seed * 7919 + 13);
+    const waves = Array.from({ length: 4 }, () => ({ fx: 0.5 + rand() * 2.5, fy: 0.5 + rand() * 2.5, ph: rand() * 6.283, a: 0.5 + rand() }));
+    const R = Math.max(4, Math.round(B * 0.75));
+    const gain = 1 + t * 1.5; // exaggerate the real motion
+    const drip = Math.max(1, Math.max(w, h) * 0.003) * (0.5 + t);
+    const prevL = st.prevLuma;
+    const prevO = st.prevOut;
+    for (let by = 0; by < bh; by++)
+      for (let bx = 0; bx < bw; bx++) {
+        const u = bx / bw;
+        const v = by / bh;
+        let mag = 0;
+        for (const wv of waves) mag += wv.a * Math.cos(u * wv.fy * 3.1 + v * wv.fx * 3.1 + wv.ph);
+        // Which blocks lose their keyframe — all of them near full strength.
+        if (t < 0.95 && mag <= (melt ? 1.6 : 2.2) - 3.4 * t) continue;
+        const x0 = bx * B;
+        const y0 = by * B;
+        const x1 = Math.min(w, x0 + B);
+        const y1 = Math.min(h, y0 + B);
+        // Where did this block come from? Sum of absolute differences on
+        // every 2nd pixel, searched coarse-to-fine (4px grid, then ±2 around
+        // the best) — about half the work of a full search, same answer.
+        let bdx = 0;
+        let bdy = 0;
+        let best = Infinity;
+        const sadAt = (dx: number, dy: number) => {
+          if (x0 + dx < 0 || y0 + dy < 0 || x1 + dx > w || y1 + dy > h) return;
+          let sad = 0;
+          for (let y = y0; y < y1 && sad < best; y += 2)
+            for (let x = x0; x < x1; x += 2) {
+              const d = luma[y * w + x] - prevL[(y + dy) * w + x + dx];
+              sad += d < 0 ? -d : d;
+            }
+          if (sad < best) {
+            best = sad;
+            bdx = dx;
+            bdy = dy;
+          }
+        };
+        sadAt(0, 0);
+        for (let dy = -R; dy <= R; dy += 4) for (let dx = -R; dx <= R; dx += 4) sadAt(dx, dy);
+        const cx0 = bdx;
+        const cy0 = bdy;
+        for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) if (dx || dy) sadAt(cx0 + dx, cy0 + dy);
+        let mx = Math.round(bdx * gain);
+        let my = Math.round(bdy * gain);
+        if (melt) my -= Math.round(drip);
+        for (let y = y0; y < y1; y++) {
+          const sy = Math.min(h - 1, Math.max(0, y + my));
+          for (let x = x0; x < x1; x++) {
+            const sx = Math.min(w - 1, Math.max(0, x + mx));
+            const s4 = (sy * w + sx) * 4;
+            const d4 = (y * w + x) * 4;
+            out[d4] = prevO[s4];
+            out[d4 + 1] = prevO[s4 + 1];
+            out[d4 + 2] = prevO[s4 + 2];
+          }
+        }
+      }
+  }
+  session.mosh.set(key, { w, h, prevLuma: luma, prevOut: out });
+  const small = await createImageBitmap(new ImageData(new Uint8ClampedArray(out), w, h));
+  const big = await createImageBitmap(small, { resizeWidth: sw, resizeHeight: sh, resizeQuality: "high" });
+  small.close();
+  return big;
+}
+
+/**
+ * Depth looks on video: the depth model runs at most 15×/s and the map is
+ * reused in between (depth changes slowly; at 30 fps this halves the cost).
+ * The look itself is redrawn every frame on the fresh picture.
+ */
+export async function depthFrame(
+  src: Src,
+  kind: StylizeKind,
+  bg: string,
+  session: VideoSession,
+  time: number
+): Promise<ImageBitmap> {
+  const [sw, sh] = srcSize(src);
+  const k = Math.min(1, WORK_LONG / Math.max(sw, sh));
+  const w = Math.max(16, Math.round(sw * k));
+  const h = Math.max(16, Math.round(sh * k));
+  const last = session.depth;
+  let D: Float32Array;
+  if (last && last.w === w && last.h === h && time - last.time >= 0 && time - last.time < 1 / 15) D = last.map;
+  else {
+    D = await depthOf(src, w, h);
+    session.depth = { w, h, time, map: D };
+  }
+  const img = await depthLook(src, w, h, kind, bg, D);
+  const small = await createImageBitmap(img);
+  const big = await createImageBitmap(small, { resizeWidth: sw, resizeHeight: sh, resizeQuality: "high" });
+  small.close();
+  return big;
 }

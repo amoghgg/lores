@@ -12,21 +12,23 @@ function pad(n: number, w = 2) {
   return String(n).padStart(w, "0");
 }
 
-function stamp(seed: number) {
+function stamp(seed: number, time = 0) {
   const yy = 2000 + Math.floor(hash2(seed, 1, 81) * 9);
   const mo = 1 + Math.floor(hash2(seed, 2, 82) * 12);
   const dd = 1 + Math.floor(hash2(seed, 3, 83) * 28);
   const hh = Math.floor(hash2(seed, 4, 84) * 5) + 1;
   const mm = Math.floor(hash2(seed, 5, 85) * 60);
-  const ss = Math.floor(hash2(seed, 6, 86) * 60);
-  return { yy, mo, dd, hh, mm, ss };
+  // Video: the clock runs with the footage.
+  const t0 = Math.floor(hash2(seed, 4, 84) * 5 + 1) * 3600 + Math.floor(hash2(seed, 5, 85) * 60) * 60 + Math.floor(hash2(seed, 6, 86) * 60) + Math.floor(time);
+  const hh2 = Math.floor(t0 / 3600) % 24;
+  return { yy, mo, dd, hh: time ? hh2 : hh, mm: Math.floor(t0 / 60) % 60, ss: t0 % 60 };
 }
 
 const MONTHS = ["JAN.", "FEB.", "MAR.", "APR.", "MAY", "JUN.", "JUL.", "AUG.", "SEP.", "OCT.", "NOV.", "DEC."];
 
-function drawHud(ctx: CanvasRenderingContext2D, w: number, h: number, kind: FilmRecipe["hud"], seed: number) {
+function drawHud(ctx: CanvasRenderingContext2D, w: number, h: number, kind: FilmRecipe["hud"], seed: number, time = 0) {
   const s = Math.min(w, h);
-  const t = stamp(seed);
+  const t = stamp(seed, time);
   ctx.save();
   ctx.textBaseline = "top";
   if (kind === "rec" || kind === "vhs") {
@@ -129,13 +131,15 @@ export async function postFilm(
   canvas: HTMLCanvasElement,
   r: FilmRecipe,
   c: Pick<FilmControls, "seed" | "amount" | "frame">,
-  things?: Thing[]
+  things?: Thing[],
+  /** Seconds into a video (photos: 0). */
+  time = 0
 ) {
   const seed = c.seed;
   const ctx = canvas.getContext("2d");
   if (!ctx) return canvas;
   if (r.fx !== "none") applyFx(canvas, r, seed, c.amount, c.frame, things);
-  if (r.hud !== "none") drawHud(ctx, canvas.width, canvas.height, r.hud, seed);
+  if (r.hud !== "none") drawHud(ctx, canvas.width, canvas.height, r.hud, seed, time);
   if (r.crunch > 0) {
     // 1 → three passes at very low quality (deep-fried); 0.5 → one mid pass (digicam).
     const passes = r.crunch > 0.7 ? 3 : 1;

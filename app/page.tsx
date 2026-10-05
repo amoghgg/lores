@@ -40,6 +40,9 @@ import { idbGet, idbSet, lsGet, lsSet } from "@/lib/persist";
 import { readRecipe } from "@/lib/pngmeta";
 import { renderExport, saveBlob, toBlob, type ExportOptions } from "@/lib/exporter";
 import { SAMPLE, randomFact } from "@/lib/sample";
+import { VideoSession } from "@/lib/session";
+import { PREVIEW_LONG, exportVideo, grabFrame, isVideoFile, loadVideo, seekTo, type LoadedVideo } from "@/lib/video";
+import { VideoBar } from "@/components/v2/VideoBar";
 
 // Pixel art doesn't need 12 MP; film looks read fine at 2.5 MP and the GPU
 // stays well under a frame.
@@ -85,6 +88,21 @@ function bitmapCanvas(b: ImageBitmap): HTMLCanvasElement {
   return c;
 }
 
+/** "About 0:18 left · 1.6× real-time speed" once there's enough to go on. */
+function etaText(j: { progress: number; media: number; started: number }) {
+  const elapsed = (performance.now() - j.started) / 1000;
+  if (j.progress < 0.03 || elapsed < 1) return "Estimating time left…";
+  const left = Math.max(0, (elapsed * (1 - j.progress)) / j.progress);
+  const speed = j.media / elapsed;
+  const clock = `${Math.floor(left / 60)}:${String(Math.round(left % 60)).padStart(2, "0")}`;
+  return `About ${clock} left · ${speed.toFixed(1)}× real-time speed`;
+}
+
+/** Free a replaced image a moment later — a render or thumbnail may still be reading it. */
+function freeLater(b: ImageBitmap) {
+  window.setTimeout(() => b.close(), 4000);
+}
+
 // Kept in capitals in saved filenames.
 const ACRONYMS = new Set(["CGA", "IGN", "NEG"]);
 
@@ -94,6 +112,33 @@ export default function Page() {
   // ─── Image ───────────────────────────────────────────────────────────
   const [source, setSource] = useState<Source | null>(null);
   const [original, setOriginal] = useState<HTMLCanvasElement | null>(null);
+
+  // ─── Video ───────────────────────────────────────────────────────────
+  // A video works like a photo whose "photo" is the current frame: the
+  // thumbnails use a still (refreshed on pause), the viewer runs every frame
+  // through the pipeline while it plays, and SAVE renders the whole clip.
+  const [video, setVideo] = useState<LoadedVideo | null>(null);
+  const videoRef = useRef<LoadedVideo | null>(null);
+  videoRef.current = video;
+  const sessionRef = useRef(new VideoSession());
+  const frameRef = useRef<{ bitmap: ImageBitmap; time: number } | null>(null);
+  const retired = useRef<ImageBitmap[]>([]);
+  const [playing, setPlaying] = useState(false);
+  const [vTime, setVTime] = useState(0);
+  const [videoJob, setVideoJob] = useState<{
+    progress: number;
+    /** Seconds of video rendered so far, and the clip length. */
+    media: number;
+    duration: number;
+    started: number;
+    cancel: () => Promise<void>;
+  } | null>(null);
+  /** Swap in a new current frame; old ones are freed a few frames later (a render may still hold one). */
+  const setFrame = (bitmap: ImageBitmap, time: number) => {
+    if (frameRef.current) retired.current.push(frameRef.current.bitmap);
+    while (retired.current.length > 3) retired.current.shift()!.close();
+    frameRef.current = { bitmap, time };
+  };
   const [texture, setTexture] = useState<Texture | null>(null);
 
   // ─── Recipe + history ────────────────────────────────────────────────
@@ -270,7 +315,7 @@ export default function Page() {
     const audio = getAudio();
     return audio.subscribe(() => setAudioState(audio.state));
   }, []);
-  const live = (audioState === "playing" || audioState === "mic") && vizMode !== "off" && !!source;
+  const live = (audioState === "playing" || audioState === "mic") && vizMode !== "off" && !!source && !video;
   const liveCanvasRef = useRef<HTMLCanvasElement | null>(null);
   if (typeof document !== "undefined" && !liveCanvasRef.current) {
     liveCanvasRef.current = document.createElement("canvas");
@@ -303,7 +348,16 @@ export default function Page() {
         dirty.current = false;
         const src = sourceRef.current;
         if (!src) break;
-        const r = await processBest(src.image, settingsRef.current, overlayRef.current, filmRef.current);
+        const v = videoRef.current;
+        const fr = v ? frameRef.current : null;
+        const r = await processBest(
+          fr?.bitmap ?? src.image,
+          settingsRef.current,
+          overlayRef.current,
+          filmRef.current,
+          "main",
+          v ? { time: fr?.time ?? 0, session: sessionRef.current } : undefined
+        );
         if (!dirty.current) setOutput(r.canvas);
       } while (dirty.current);
     } catch (err) {
@@ -397,11 +451,16 @@ export default function Page() {
   const loadBlob = useCallback(
     async (blob: Blob, filename: string, opts: { remember?: boolean } = {}) => {
       try {
+        if (isVideoFile(blob, filename)) {
+          await openVideo(blob, filename, opts);
+          return;
+        }
         // A LORES PNG carries its recipe — dropping one restores the look.
         const code = await readRecipe(blob);
         const next = await decodeImage(blob, filename);
+        closeVideo();
         setSource((prev) => {
-          prev?.image.close();
+          if (prev) freeLater(prev.image);
           return next;
         });
         setOriginal(bitmapCanvas(next.image));
@@ -428,6 +487,113 @@ export default function Page() {
     [apply, say, enterApp]
   );
 
+  function closeVideo() {
+    setPlaying(false);
+    setVideo((prev) => {
+      if (prev) {
+        prev.el.pause();
+        prev.el.remove();
+        URL.revokeObjectURL(prev.url);
+      }
+      return null;
+    });
+    frameRef.current = null;
+  }
+
+  async function openVideo(blob: Blob, filename: string, opts: { remember?: boolean }) {
+    const v = await loadVideo(blob, filename);
+    await seekTo(v, Math.min(0.05, v.duration / 2));
+    const poster = await grabFrame(v);
+    const frame = await createImageBitmap(poster);
+    closeVideo();
+    sessionRef.current.reset();
+    setFrame(frame, v.el.currentTime);
+    setVideo(v);
+    setVTime(v.el.currentTime);
+    const next: Source = { image: poster, filename, width: poster.width, height: poster.height, id: `${filename}:${blob.size}:${Date.now()}` };
+    setSource((prev) => {
+      if (prev) freeLater(prev.image);
+      return next;
+    });
+    setOriginal(bitmapCanvas(poster));
+    getThumbs().setSource(poster, next.id);
+    if (opts.remember !== false) {
+      // Remember it for next visit unless it's huge.
+      if (blob.size < 300 * 1024 * 1024) void idbSet("source", { blob, filename });
+      setOwnPhoto(true);
+      const from = pendingEnter.current;
+      pendingEnter.current = null;
+      if (viewRef.current === "home") enterApp(from ?? { x: innerWidth / 2, y: innerHeight / 2 });
+    }
+    say(`VIDEO · ${Math.round(v.duration)}s · TAP ▶ TO PLAY`, 2600);
+  }
+
+  // Playback: each shown frame goes through the pipeline; slow looks drop frames.
+  useEffect(() => {
+    const v = video;
+    if (!v || !playing) return;
+    let stop = false;
+    void v.el.play().catch(() => setPlaying(false));
+    (async () => {
+      while (!stop) {
+        const t = v.el.currentTime;
+        // Playback only has to look right at screen size: ~¼ the pixels.
+        const bmp = await grabFrame(v, PREVIEW_LONG);
+        if (stop) {
+          bmp.close();
+          break;
+        }
+        setFrame(bmp, t);
+        await renderNow();
+        setVTime(t);
+        await new Promise((r) => requestAnimationFrame(r));
+      }
+    })();
+    return () => {
+      stop = true;
+      v.el.pause();
+    };
+  }, [video, playing, renderNow]);
+
+  // Paused on a frame (after playing or scrubbing): it becomes the still the
+  // thumbnails and hold-to-compare use.
+  const settleFrame = useCallback(async () => {
+    const v = videoRef.current;
+    if (!v) return;
+    const bmp = await grabFrame(v);
+    setFrame(bmp, v.el.currentTime);
+    setVTime(v.el.currentTime);
+    void renderNow();
+    const poster = await createImageBitmap(bmp);
+    const id = `${v.filename}:${v.el.currentTime.toFixed(2)}:${Date.now()}`;
+    setSource((prev) => {
+      if (prev) freeLater(prev.image);
+      return { image: poster, filename: v.filename, width: poster.width, height: poster.height, id };
+    });
+    setOriginal(bitmapCanvas(poster));
+    getThumbs().setSource(poster, id);
+  }, [renderNow]);
+
+  const togglePlay = () => {
+    if (!videoRef.current) return;
+    if (playing) {
+      setPlaying(false);
+      window.setTimeout(() => void settleFrame(), 60);
+    } else setPlaying(true);
+  };
+  const scrubTo = async (t: number) => {
+    const v = videoRef.current;
+    if (!v) return;
+    setPlaying(false);
+    // A jump is a new keyframe for datamosh and a fresh start for tracking.
+    sessionRef.current.reset();
+    await seekTo(v, t);
+    await settleFrame();
+  };
+
+  const togglePlayRef = useRef(togglePlay);
+  togglePlayRef.current = togglePlay;
+
   const fileInput = useRef<HTMLInputElement>(null);
   const openPicker = () => fileInput.current?.click();
 
@@ -436,7 +602,7 @@ export default function Page() {
       const image = await createImageBitmap(f);
       const id = `${f.name}:${f.size}:${Date.now()}`;
       setTexture((prev) => {
-        prev?.image.close();
+        if (prev) freeLater(prev.image);
         return { image, filename: f.name, id };
       });
       getThumbs().setTexture(image, id);
@@ -446,7 +612,7 @@ export default function Page() {
   };
   const clearTexture = () => {
     setTexture((prev) => {
-      prev?.image.close();
+      if (prev) freeLater(prev.image);
       return null;
     });
     getThumbs().setTexture(null, "");
@@ -563,7 +729,50 @@ export default function Page() {
     return { blob, name: fileName(opts.format === "png" ? "png" : "jpg") };
   };
 
+  /** Render every frame of the clip through the current look, keep the audio. */
+  const saveVideo = async () => {
+    const v = videoRef.current;
+    if (!v || exporting) return;
+    setExporting(true);
+    setPlaying(false);
+    const session = new VideoSession();
+    try {
+      const job = await exportVideo(
+        v.blob,
+        async (frame, { time }) => {
+          const r = await processBest(frame, settingsRef.current, overlayRef.current, filmRef.current, "main", { time, session });
+          return r.canvas as HTMLCanvasElement;
+        },
+        (p, media) => setVideoJob((j) => (j ? { ...j, progress: p, media } : j))
+      );
+      setVideoJob({ progress: 0, media: 0, duration: job.duration, started: performance.now(), cancel: job.cancel });
+      const out = await job.done;
+      const name = fileName(out.ext);
+      // On phones, the share sheet sends it straight to Photos / Instagram.
+      const file = new File([out.blob], name, { type: out.blob.type });
+      const touch = matchMedia("(pointer: coarse)").matches;
+      if (touch && navigator.canShare?.({ files: [file] })) {
+        try {
+          await navigator.share({ files: [file] });
+        } catch {
+          saveBlob(out.blob, name);
+        }
+      } else saveBlob(out.blob, name);
+      say(`VIDEO SAVED · ${(out.blob.size / 1e6).toFixed(1)} MB`, 2600);
+    } catch (err) {
+      if (err instanceof Error && /cancel/i.test(err.name + err.message)) say("CANCELLED");
+      else {
+        console.error("[pixel] video export failed", err);
+        say("COULDN'T SAVE THE VIDEO");
+      }
+    } finally {
+      setVideoJob(null);
+      setExporting(false);
+    }
+  };
+
   const save = async (opts = exportOpts) => {
+    if (videoRef.current) return saveVideo();
     if (exporting) return;
     setExporting(true);
     try {
@@ -684,6 +893,9 @@ export default function Page() {
         case "3":
           setTab("more");
           break;
+        case "k":
+          togglePlayRef.current();
+          break;
         case "f":
           {
             const l = filmLayers(recipeRef.current)[filmLayerRef.current];
@@ -732,7 +944,7 @@ export default function Page() {
       e.preventDefault();
       setDragging(false);
       const f = e.dataTransfer?.files?.[0];
-      if (f && f.type.startsWith("image/")) void loadBlob(f, f.name);
+      if (f && (f.type.startsWith("image/") || isVideoFile(f, f.name))) void loadBlob(f, f.name);
     };
     const paste = (e: ClipboardEvent) => {
       const items = e.clipboardData?.items;
@@ -823,7 +1035,7 @@ export default function Page() {
       <input
         ref={fileInput}
         type="file"
-        accept="image/*"
+        accept="image/*,video/*"
         className="sr-only"
         onChange={(e) => {
           const f = e.target.files?.[0];
@@ -840,9 +1052,9 @@ export default function Page() {
         >
           LORES
         </button>
-        <button className="bar-file" onClick={openPicker} title="Open another image (or drop / paste one anywhere)">
+        <button className="bar-file" onClick={openPicker} title="Open another photo or video (or drop / paste one anywhere)">
           <span className="truncate">{source?.filename ?? "…"}</span>
-          <span className="bar-file-cta">CHANGE PHOTO</span>
+          <span className="bar-file-cta">{video ? "CHANGE VIDEO" : "CHANGE PHOTO"}</span>
         </button>
         <span className="flex-1" />
         <button className="bar-icon" onClick={undo} disabled={!past.current.length} title="Undo (⌘Z)" aria-label="Undo">↶</button>
@@ -860,17 +1072,28 @@ export default function Page() {
         </button>
         <div className="bar-save">
           <button className="btn-primary" onClick={quickSave} disabled={!output || exporting} title="Save (⌘S)">
-            {exporting ? "SAVING…" : "SAVE"}
+            {exporting ? "SAVING…" : video ? "SAVE VIDEO" : "SAVE"}
           </button>
-          <button className="btn-primary bar-save-more" onClick={() => setOverlay("export")} disabled={!output} title="Save options (E)" aria-label="Save options">
-            ▾
-          </button>
+          {!video && (
+            <button className="btn-primary bar-save-more" onClick={() => setOverlay("export")} disabled={!output} title="Save options (E)" aria-label="Save options">
+              ▾
+            </button>
+          )}
         </div>
       </header>
 
       <main className="stage">
         <Viewer output={output} original={original} crisp={crisp} holdKey={holdKey} busy={busy}>
           {hideUI && <div className="viewer-hint">H · SHOW CONTROLS</div>}
+          {video && !hideUI && (
+            <VideoBar
+              playing={playing}
+              time={vTime}
+              duration={video.duration}
+              onToggle={togglePlay}
+              onScrub={(t) => void scrubTo(t)}
+            />
+          )}
           {!hideUI && (
             <Layers
               recipe={recipe}
@@ -920,6 +1143,7 @@ export default function Page() {
             hasTexture={!!texture}
           />
           <Looks
+            isVideo={!!video}
             tab={tab}
             recipe={recipe}
             base={thumbBase}
@@ -948,6 +1172,20 @@ export default function Page() {
       </main>
 
       {toast && <div className="toast" role="status">{toast}</div>}
+      {videoJob && (
+        <div className="vjob" role="status" aria-label="Saving video">
+          <div className="vjob-row">
+            <span>RENDERING VIDEO · {Math.round(videoJob.progress * 100)}%</span>
+            <button className="btn-ghost" onClick={() => void videoJob.cancel()}>
+              CANCEL
+            </button>
+          </div>
+          <div className="vjob-bar">
+            <div className="vjob-fill" style={{ width: `${Math.round(videoJob.progress * 100)}%` }} />
+          </div>
+          <div className="vjob-eta">{etaText(videoJob)}</div>
+        </div>
+      )}
       {dragging && (
         <div className="dropveil">
           <span className="font-display text-5xl text-lime">DROP TO OPEN</span>

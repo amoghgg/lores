@@ -6,6 +6,7 @@ import { Range } from "./Range";
 import { PALETTES } from "@/lib/palettes";
 import { FILM_CATEGORIES, FILM_STOCKS, HERO_LOOKS, getStock } from "@/lib/filmStocks";
 import { EVENT as MODELS_EVENT, MODEL_SIZE, missingFor, readyCount } from "@/lib/models";
+import { PHOTO_ONLY } from "@/lib/session";
 import {
   BLENDS,
   BLOCKS,
@@ -67,6 +68,8 @@ export function Tabs({ tab, onTab }: { tab: Tab; onTab: (t: Tab) => void }) {
 // ───────────────────────────────────────────────────────────────────────────
 
 type LooksProps = {
+  /** A video is open: the heavy restyles are photo-only. */
+  isVideo?: boolean;
   tab: Tab;
   /** Clear the PIXEL-tab stages (size, colours, pattern). */
   onClearPixel?: () => void;
@@ -135,6 +138,14 @@ export function Looks(p: LooksProps) {
     if (r.block > 1) pixelBits.push(`${r.block}px pixels`);
     return (
       <div className="looks">
+        {p.isVideo && stack.some((l) => PHOTO_ONLY.has(getStock(l.film)?.recipe.stylize ?? "none")) && (
+          <div className="stack-note" role="status">
+            <span>
+              <b>{stack.filter((l) => PHOTO_ONLY.has(getStock(l.film)?.recipe.stylize ?? "none")).map((l) => getStock(l.film)?.name).join(", ")}</b>{" "}
+              only works on photos — it&apos;s skipped on this video.
+            </span>
+          </div>
+        )}
         {pixelBits.length > 0 && p.onClearPixel && (
           <div className="stack-note" role="status">
             <span>
@@ -177,20 +188,27 @@ export function Looks(p: LooksProps) {
           {list.map((s) => {
             const at = stack.flatMap((l, i) => (l.film === s.id ? [i + 1] : []));
             const missing = missingFor(s.recipe);
+            const photoOnly = !!p.isVideo && PHOTO_ONLY.has(s.recipe.stylize);
             const tile = ft(s.id);
             return (
               <Thumb
                 key={s.id}
                 {...tile}
-                onHover={missing.length ? undefined : tile.onHover}
-                placeholder={missing.length ? `TAP TO LOAD\n${missing.map((k) => MODEL_SIZE[k]).join(" + ")}` : undefined}
+                onHover={missing.length || photoOnly ? undefined : tile.onHover}
+                placeholder={
+                  photoOnly
+                    ? "PHOTOS ONLY"
+                    : missing.length
+                    ? `TAP TO LOAD\n${missing.map((k) => MODEL_SIZE[k]).join(" + ")}`
+                    : undefined
+                }
                 label={s.name}
                 sub={s.hint}
                 starred={p.favorites.includes(s.id)}
                 selected={active?.film === s.id}
                 badge={stack.length > 1 && at.length ? at.join("·") : undefined}
-                onSelect={() => p.films.pick(s.id)}
-                onAdd={stack.length && stack.length < MAX_FILMS ? () => p.films.add(s.id) : undefined}
+                onSelect={() => !photoOnly && p.films.pick(s.id)}
+                onAdd={!photoOnly && stack.length && stack.length < MAX_FILMS ? () => p.films.add(s.id) : undefined}
               />
             );
           })}

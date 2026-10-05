@@ -15,6 +15,8 @@ export type Thing = {
   w: number;
   h: number;
   kind: "object" | "face" | "part";
+  /** Stable across video frames (set by trackThings). */
+  id?: number;
 };
 
 type Src = ImageBitmap | HTMLImageElement | HTMLCanvasElement;
@@ -132,4 +134,51 @@ export function detectThings(src: Src): Promise<Thing[]> {
   cache.set(src, job);
   job.catch(() => cache.delete(src));
   return job;
+}
+
+/**
+ * Video: keep each thing's ID across frames — match by label and overlap,
+ * ease the box towards the new detection so it glides instead of jitters,
+ * and hold a lost thing for a few frames before dropping it.
+ */
+export function trackThings(session: import("./session").VideoSession, found: Thing[]): (Thing & { id: number })[] {
+  const iou = (a: Thing, b: Thing) => {
+    const x0 = Math.max(a.x, b.x);
+    const y0 = Math.max(a.y, b.y);
+    const x1 = Math.min(a.x + a.w, b.x + b.w);
+    const y1 = Math.min(a.y + a.h, b.y + b.h);
+    const inter = Math.max(0, x1 - x0) * Math.max(0, y1 - y0);
+    return inter / (a.w * a.h + b.w * b.h - inter || 1);
+  };
+  const used = new Set<number>();
+  const next: import("./session").Track[] = [];
+  for (const f of found) {
+    let best = -1;
+    let bestIou = 0.25;
+    session.tracks.forEach((t, i) => {
+      if (used.has(i) || t.label !== f.label) return;
+      const o = iou(t, f);
+      if (o > bestIou) {
+        bestIou = o;
+        best = i;
+      }
+    });
+    if (best >= 0) {
+      used.add(best);
+      const t = session.tracks[best];
+      const k = 0.55; // smoothing towards the new box
+      next.push({ ...f, id: t.id, seen: 0, hits: t.hits + 1, x: t.x + (f.x - t.x) * k, y: t.y + (f.y - t.y) * k, w: t.w + (f.w - t.w) * k, h: t.h + (f.h - t.h) * k });
+    } else {
+      next.push({ ...f, id: session.nextId++, seen: 0, hits: 1 });
+    }
+  }
+  // Briefly missed (blink, motion blur): keep it for up to 4 frames.
+  session.tracks.forEach((t, i) => {
+    if (!used.has(i) && t.seen < 4) next.push({ ...t, seen: t.seen + 1 });
+  });
+  session.tracks = next;
+  // A one-frame flicker isn't a thing: show it once it's been seen twice.
+  // (The first frame after a seek has no history, so it shows everything.)
+  const fresh = next.every((t) => t.hits === 1);
+  return fresh ? next : next.filter((t) => t.hits >= 2);
 }

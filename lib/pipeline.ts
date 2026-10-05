@@ -10,6 +10,7 @@ import { getPalette } from "./palettes";
 import { stippleBlend } from "./blend";
 import { applyFilmCPU, type FilmRecipe, type FilmControls } from "./film";
 import { needsPost, postFilm } from "./filmPost";
+import { PHOTO_ONLY, type FrameContext } from "./session";
 
 export type DitherMode =
   | "none"
@@ -49,6 +50,8 @@ export type OverlayInput = {
 export type FilmInput = {
   recipe: FilmRecipe;
   controls: FilmControls;
+  /** Seconds into a video — grain and overlays move with it. */
+  time?: number;
 };
 
 export type ProcessResult = {
@@ -260,18 +263,40 @@ export async function processBest(
   overlay?: OverlayInput | null,
   film?: FilmInput | FilmInput[] | null,
   /** Render on the thumbnail GPU instance instead of the main one. */
-  target: "main" | "thumb" = "main"
+  target: "main" | "thumb" = "main",
+  /** A video frame: its time and the session carrying state between frames. */
+  frame?: FrameContext
 ): Promise<ProcessResult & { engine: "gpu" | "cpu" }> {
   // PS2 / airbrush / sticker / impasto restyle the source first (in stack
   // order); every grade, grain, pixel stage and texture then runs on top.
   const temps: ImageBitmap[] = [];
   let films = asFilms(film);
+  if (frame) {
+    // Video: photo-only restyles are skipped; everything moves with time.
+    films = films.filter((f) => !PHOTO_ONLY.has(f.recipe.stylize)).map((f) => ({ ...f, time: frame.time }));
+  }
   if (films.some((f) => f.recipe.stylize !== "none")) {
-    const { stylizedSource } = await import("./stylize");
+    const { stylizedSource, moshFrame, depthFrame, intensityRestyle } = await import("./stylize");
     const out: FilmInput[] = [];
     for (const f of films) {
       if (f.recipe.stylize === "none") {
         out.push(f);
+        continue;
+      }
+      if (frame && intensityRestyle(f.recipe.stylize)) {
+        const b = await moshFrame(source, f.recipe.stylize, f.controls.amount, f.controls.seed, frame.session);
+        source = b;
+        temps.push(b);
+        out.push({ ...f, controls: { ...f.controls, amount: 1 } });
+        continue;
+      }
+      if (frame && f.recipe.stylize.startsWith("depth")) {
+        const d = await depthFrame(source, f.recipe.stylize, f.recipe.stylizeBg, frame.session, frame.time);
+        // Strength still fades a depth look, as on photos.
+        source = await blendOver(source, d, f.controls.amount);
+        temps.push(d);
+        if (source !== d) temps.push(source as ImageBitmap);
+        out.push({ ...f, controls: { ...f.controls, amount: 1 } });
         continue;
       }
       const r = await stylizedSource(source, f.recipe.stylize, f.recipe.stylizeBg, f.controls.amount, f.controls.seed);
@@ -282,10 +307,23 @@ export async function processBest(
     films = out;
   }
   try {
-    return await renderBest(source, settings, overlay, films, target);
+    return await renderBest(source, settings, overlay, films, target, frame);
   } finally {
     for (const t of temps) t.close();
   }
+}
+
+/** `over` on top of `under` at `amount` (1 = just `over`). */
+async function blendOver(under: HTMLImageElement | ImageBitmap, over: ImageBitmap, amount: number) {
+  if (amount >= 0.999) return over;
+  const c = document.createElement("canvas");
+  c.width = over.width;
+  c.height = over.height;
+  const x = c.getContext("2d")!;
+  x.drawImage(under, 0, 0, c.width, c.height);
+  x.globalAlpha = Math.max(0, amount);
+  x.drawImage(over, 0, 0);
+  return createImageBitmap(c);
 }
 
 /** Live film layers only — null, single and stacked inputs all normalise here. */
@@ -294,17 +332,36 @@ export function asFilms(film: FilmInput | FilmInput[] | null | undefined): FilmI
   return (Array.isArray(film) ? film : [film]).filter((f) => f.controls.amount > 0);
 }
 
-async function runPost(canvas: HTMLCanvasElement, films: FilmInput[], source: HTMLImageElement | ImageBitmap) {
+async function runPost(
+  canvas: HTMLCanvasElement,
+  films: FilmInput[],
+  source: HTMLImageElement | ImageBitmap,
+  frame?: FrameContext
+) {
   // Tracking looks label what's really there: detect once per image.
   let things: import("./detect").Thing[] | undefined;
   if (films.some((f) => f.recipe.fx === "blob")) {
     const { detectThings } = await import("./detect");
-    things = await detectThings(source).catch((err) => {
-      console.warn("[pixel] detection failed — tracking falls back to bright/dark spots", err);
-      return [];
-    });
+    const { trackThings } = await import("./detect");
+    const S = frame?.session;
+    if (S && frame && S.tracks.length && frame.time - S.lastDetect >= 0 && frame.time - S.lastDetect < 1 / 15) {
+      // Video between detector runs: the tracked boxes carry over (detecting
+      // at most 15×/s halves the cost at 30 fps; the tracker smooths it).
+      const fresh = S.tracks.every((t) => t.hits === 1);
+      things = fresh ? S.tracks : S.tracks.filter((t) => t.hits >= 2);
+    } else {
+      things = await detectThings(source).catch((err) => {
+        console.warn("[pixel] detection failed — tracking falls back to bright/dark spots", err);
+        return [];
+      });
+      // Video: the same object keeps its ID and its box glides between frames.
+      if (S && frame && things) {
+        things = trackThings(S, things);
+        S.lastDetect = frame.time;
+      }
+    }
   }
-  for (const f of films) if (needsPost(f.recipe)) await postFilm(canvas, f.recipe, f.controls, things);
+  for (const f of films) if (needsPost(f.recipe)) await postFilm(canvas, f.recipe, f.controls, things, frame?.time ?? 0);
 }
 
 async function renderBest(
@@ -312,7 +369,8 @@ async function renderBest(
   settings: Settings,
   overlay: OverlayInput | null | undefined,
   films: FilmInput[],
-  target: "main" | "thumb"
+  target: "main" | "thumb",
+  frame?: FrameContext
 ): Promise<ProcessResult & { engine: "gpu" | "cpu" }> {
   const { needsCpuGrid, getWebGPU, getThumbGPU, markGPUBroken, withTimeout } = await import("./gpu/webgpu");
   {
@@ -347,7 +405,7 @@ async function renderBest(
           readback: true,
         }), 15_000, "GPU render");
         cpuGrid?.close();
-        await runPost(r.canvas, films, source);
+        await runPost(r.canvas, films, source, frame);
         return { ...r, engine: "gpu" };
       } catch (err) {
         console.warn("[pixel] GPU pipeline failed, falling back to CPU:", err);
@@ -356,7 +414,7 @@ async function renderBest(
     }
   }
   const r = process(source, settings, overlay, films);
-  await runPost(r.canvas, films, source);
+  await runPost(r.canvas, films, source, frame);
   return { ...r, engine: "cpu" };
 }
 

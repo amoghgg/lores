@@ -2,15 +2,45 @@
   "redirects": [
     {
       "source": "/",
-      "has": [{ "type": "host", "value": "pixel.amoghbajpai.com" }],
+      "has": [
+        {
+          "type": "host",
+          "value": "pixel.amoghbajpai.com"
+        }
+      ],
       "destination": "https://lores.amoghbajpai.com/",
       "permanent": true
     },
     {
       "source": "/:path+",
-      "has": [{ "type": "host", "value": "pixel.amoghbajpai.com" }],
+      "has": [
+        {
+          "type": "host",
+          "value": "pixel.amoghbajpai.com"
+        }
+      ],
       "destination": "https://lores.amoghbajpai.com/:path+",
       "permanent": true
+    }
+  ],
+  "headers": [
+    {
+      "source": "/mediapipe/(.*)",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=31536000, immutable"
+        }
+      ]
+    },
+    {
+      "source": "/chuck-norris.jpg",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=604800"
+        }
+      ]
     }
   ]
 }

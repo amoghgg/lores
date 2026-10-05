@@ -541,7 +541,7 @@ function findBlobs(c: HTMLCanvasElement, seed: number): { blobs: Blob[]; sw: num
   return { blobs, sw, sh };
 }
 
-type Tracked = { id: number; label: string; kind: Thing["kind"] | "spot"; x0: number; y0: number; bw: number; bh: number; cx: number; cy: number };
+type Tracked = { id: number; fixed?: boolean; label: string; kind: Thing["kind"] | "spot"; x0: number; y0: number; bw: number; bh: number; cx: number; cy: number };
 
 function blob(c: HTMLCanvasElement, p: FxParams, seed: number, things: Thing[] | undefined) {
   const { width: w, height: h } = c;
@@ -555,7 +555,7 @@ function blob(c: HTMLCanvasElement, p: FxParams, seed: number, things: Thing[] |
     const bh = Math.min(h - y0, t.h * h);
     if (bw < 2 || bh < 2) continue;
     const label = t.kind === "part" ? t.label : `${t.label} ${t.score.toFixed(2)}`;
-    boxes.push({ id: 0, label, kind: t.kind, x0, y0, bw, bh, cx: x0 + bw / 2, cy: y0 + bh / 2 });
+    boxes.push({ id: t.id ?? 0, fixed: t.id !== undefined, label, kind: t.kind, x0, y0, bw, bh, cx: x0 + bw / 2, cy: y0 + bh / 2 });
   }
   // Nothing recognised (a landscape, an abstract): mark the strongest bright
   // and dark spots — and call them exactly that.
@@ -569,7 +569,9 @@ function blob(c: HTMLCanvasElement, p: FxParams, seed: number, things: Thing[] |
       boxes.push({ id: 0, label: b.bright ? "BRIGHT SPOT" : "DARK SPOT", kind: "spot", x0, y0, bw: r * 2, bh: r * 2, cx: b.x * k, cy: b.y * k });
     }
   }
-  boxes.forEach((b, i) => (b.id = i + 1));
+  boxes.forEach((b, i) => {
+    if (!b.fixed) b.id = i + 1;
+  });
   const main = boxes.filter((b) => b.kind !== "part");
   const cx = ctx2d(c);
   if (p.fxMode === "mono") {
