@@ -362,83 +362,102 @@ function crt(c: HTMLCanvasElement, p: FxParams) {
       beam[li * PROF + k] = Math.exp(-(d * d) / (2 * sig * sig));
     }
   }
+  // Everything that depends only on the column or the row is computed once
+  // (the per-pixel cosines were most of the cost on phones).
+  const mR = new Float32Array(w).fill(1);
+  const mG = new Float32Array(w).fill(1);
+  const mB = new Float32Array(w).fill(1);
+  if (t.mask !== "none") {
+    // Smooth (cosine) phosphor stripes: no hard edges to alias into rainbow
+    // bands when the picture is shown smaller than 1:1.
+    for (let x = 0; x < w; x++) {
+      const a = ((x % P) / P) * 6.2832;
+      mR[x] = t.dark + (1 - t.dark) * (0.5 + 0.5 * Math.cos(a));
+      mG[x] = t.dark + (1 - t.dark) * (0.5 + 0.5 * Math.cos(a - 2.0944));
+      mB[x] = t.dark + (1 - t.dark) * (0.5 + 0.5 * Math.cos(a - 4.1888));
+    }
+  }
+  const U = new Float32Array(w);
+  for (let x = 0; x < w; x++) U[x] = ((x + 0.5) / w) * 2 - 1;
+  const slot = t.mask === "slot";
+  const slotGap = Math.max(1, P * 0.3);
+  const curve = t.curve;
+  const gain = t.gain;
+  const pr = ph ? ph[0] / 255 : 0;
+  const pg = ph ? ph[1] / 255 : 0;
+  const pb = ph ? ph[2] / 255 : 0;
   const cx = ctx2d(c);
   const out = cx.createImageData(w, h);
   const o = out.data;
-  const at = (row: number, x: number, ch: number) => src[(row * w + Math.min(w - 1, Math.max(0, Math.round(x)))) * 4 + ch];
+  const wm1 = w - 1;
   for (let y = 0; y < h; y++) {
+    const v0 = ((y + 0.5) / h) * 2 - 1;
+    const v0sq = v0 * v0;
     for (let x = 0; x < w; x++) {
       const i = (y * w + x) * 4;
-      let u = ((x + 0.5) / w) * 2 - 1;
-      let v = ((y + 0.5) / h) * 2 - 1;
-      if (t.curve) {
-        const cu = u * (1 + t.curve * v * v);
-        const cv = v * (1 + t.curve * u * u);
-        u = cu;
-        v = cv;
-      }
+      const u0 = U[x];
+      const u = curve ? u0 * (1 + curve * v0sq) : u0;
+      const v = curve ? v0 * (1 + curve * u0 * u0) : v0;
       o[i + 3] = 255;
       if (u <= -1 || u >= 1 || v <= -1 || v >= 1) {
         o[i] = o[i + 1] = o[i + 2] = 6; // bezel
         continue;
       }
-      const sx = ((u + 1) / 2) * w;
-      const sy = ((v + 1) / 2) * lines;
-      const row = Math.min(lines - 1, sy | 0);
+      const sx = (u + 1) * 0.5 * w;
+      const sy = (v + 1) * 0.5 * lines;
+      const row = sy < lines - 1 ? sy | 0 : lines - 1;
       const fr = sy - row;
-      let r = at(row, sx + conv, 0);
-      let g = at(row, sx, 1);
-      let b = at(row, sx - conv, 2);
+      const base = row * w;
+      let xr = (sx + conv + 0.5) | 0;
+      let xb = (sx - conv + 0.5) | 0;
+      let xg = (sx + 0.5) | 0;
+      xr = xr < 0 ? 0 : xr > wm1 ? wm1 : xr;
+      xg = xg < 0 ? 0 : xg > wm1 ? wm1 : xg;
+      xb = xb < 0 ? 0 : xb > wm1 ? wm1 : xb;
+      let r = src[(base + xr) * 4];
+      let g = src[(base + xg) * 4 + 1];
+      let b = src[(base + xb) * 4 + 2];
+      let lum = (r * 0.3 + g * 0.59 + b * 0.11) / 255;
       if (ph) {
-        const l = (r * 0.3 + g * 0.59 + b * 0.11) / 255;
-        r = l * ph[0];
-        g = l * ph[1];
-        b = l * ph[2];
+        r = lum * 255 * pr;
+        g = lum * 255 * pg;
+        b = lum * 255 * pb;
+        lum = (r * 0.3 + g * 0.59 + b * 0.11) / 255;
       }
-      const lum = Math.min(1, (r * 0.3 + g * 0.59 + b * 0.11) / 255);
-      const wgt = beam[Math.round(lum * (LUMS - 1)) * PROF + Math.min(PROF - 1, (fr * PROF) | 0)];
-      let mr = 1;
-      let mg = 1;
-      let mb = 1;
-      if (t.mask !== "none") {
-        // Smooth (cosine) phosphor stripes: no hard edges to alias into
-        // rainbow bands when the picture is shown smaller than 1:1.
-        const ph0 = ((x % P) / P) * 6.2832;
-        mr = t.dark + (1 - t.dark) * (0.5 + 0.5 * Math.cos(ph0));
-        mg = t.dark + (1 - t.dark) * (0.5 + 0.5 * Math.cos(ph0 - 2.0944));
-        mb = t.dark + (1 - t.dark) * (0.5 + 0.5 * Math.cos(ph0 - 4.1888));
-        if (t.mask === "slot") {
-          const cell = (x / P) | 0;
-          if ((y + (cell & 1) * P) % (P * 2) < Math.max(1, P * 0.3)) {
-            mr *= t.dark;
-            mg *= t.dark;
-            mb *= t.dark;
-          }
-        }
+      if (lum > 1) lum = 1;
+      const fi = (fr * PROF) | 0;
+      const wgt = beam[((lum * (LUMS - 1) + 0.5) | 0) * PROF + (fi < PROF ? fi : PROF - 1)];
+      let mr = mR[x];
+      let mg = mG[x];
+      let mb = mB[x];
+      if (slot && (y + (((x / P) | 0) & 1) * P) % (P * 2) < slotGap) {
+        mr *= t.dark;
+        mg *= t.dark;
+        mb *= t.dark;
       }
-      const px = (1 - Math.abs(u)) * w * 0.5;
-      const py = (1 - Math.abs(v)) * h * 0.5;
-      const edge = Math.min(1, px / edgePx, py / edgePx);
-      const vig = 1 - 0.22 * (u * u + v * v);
-      const k = wgt * t.gain * vig * edge;
+      const au = u < 0 ? -u : u;
+      const av = v < 0 ? -v : v;
+      const ex = ((1 - au) * w * 0.5) / edgePx;
+      const ey = ((1 - av) * h * 0.5) / edgePx;
+      const edge = ex < ey ? (ex < 1 ? ex : 1) : ey < 1 ? ey : 1;
+      const k = wgt * gain * (1 - 0.22 * (u * u + v * v)) * edge;
       o[i] = r * mr * k;
       o[i + 1] = g * mg * k;
       o[i + 2] = b * mb * k;
     }
   }
   cx.putImageData(out, 0, 0);
-  // Bloom: the glass glows around bright phosphor.
+  // Bloom: the glass glows around bright phosphor. `o` already holds what's
+  // on the canvas, so no second read-back.
   const bl = blurred(c, Math.max(3, Math.round(Math.min(w, h) / 70)));
-  const img = cx.getImageData(0, 0, w, h);
-  const d = img.data;
-  for (let i = 0; i < d.length; i += 4) {
+  const kb = t.bloom * 1.6;
+  for (let i = 0; i < o.length; i += 4) {
     for (let ch = 0; ch < 3; ch++) {
-      const a = d[i + ch];
-      const s = bl[i + ch] * t.bloom * 1.6;
-      d[i + ch] = 255 - ((255 - a) * (255 - Math.min(255, s))) / 255;
+      const sv = bl[i + ch] * kb;
+      o[i + ch] = 255 - ((255 - o[i + ch]) * (255 - (sv > 255 ? 255 : sv))) / 255;
     }
   }
-  cx.putImageData(img, 0, 0);
+  cx.putImageData(out, 0, 0);
 }
 
 // ───────────────────────────────────────────────────────────────────────────
