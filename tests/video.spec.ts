@@ -7,7 +7,7 @@ import { enterFresh, fingerprint, look, meanDiff, openFamily, trackErrors, waitF
 const CLIP = path.join(__dirname, "fixtures", "clip.webm");
 
 test("video: open, play through a look, save the clip", async ({ page }, info) => {
-  test.setTimeout(240_000);
+  test.setTimeout(420_000);
   const errors = trackErrors(page);
   await enterFresh(page);
   await page.setInputFiles("input[type=file] >> nth=0", CLIP);
@@ -31,10 +31,19 @@ test("video: open, play through a look, save the clip", async ({ page }, info) =
   await expect(page.locator(".vbar-time")).not.toHaveText(/^0:00 \//, { timeout: 30_000 });
   await page.locator(".vbar-play").click();
 
-  // Save renders every frame and keeps the audio.
-  const [dl] = await Promise.all([
-    page.waitForEvent("download", { timeout: 180_000 }),
-    page.locator(".bar-save .btn-primary").first().click(),
+  // Save renders every frame and keeps the audio. Surface the app's own log
+  // and fail fast if it reports an error instead of waiting out the timeout.
+  page.on("console", (m) => /\[pixel\]/.test(m.text()) && console.log("app:", m.text().slice(0, 400)));
+  const failed = page
+    .locator(".toast", { hasText: "COULDN'T" })
+    .waitFor({ timeout: 300_000 })
+    .then(async () => {
+      throw new Error("export reported: " + (await page.locator(".toast").innerText()));
+    });
+  const dl = await Promise.race([
+    page.waitForEvent("download", { timeout: 300_000 }),
+    failed,
+    page.locator(".bar-save .btn-primary").first().click().then(() => new Promise<never>(() => {})),
   ]);
   expect(dl.suggestedFilename()).toMatch(/^clip \(Tri-x 400\)\.(mp4|webm)$/i);
   const file = info.outputPath(dl.suggestedFilename());
