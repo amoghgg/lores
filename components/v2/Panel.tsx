@@ -1,10 +1,11 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Thumb } from "./Thumb";
 import { Range } from "./Range";
 import { PALETTES } from "@/lib/palettes";
 import { FILM_CATEGORIES, FILM_STOCKS, HERO_LOOKS, getStock } from "@/lib/filmStocks";
+import { EVENT as MODELS_EVENT, MODEL_SIZE, missingFor, readyCount } from "@/lib/models";
 import {
   BLENDS,
   BLOCKS,
@@ -86,8 +87,16 @@ type LooksProps = {
 };
 
 export function Looks(p: LooksProps) {
-  const { recipe: r, set, epoch } = p;
+  const { recipe: r, set } = p;
   const [moreOpen, setMoreOpen] = useState(false);
+  // Thumbnails re-render once a model finishes loading.
+  const [models, setModels] = useState(readyCount());
+  useEffect(() => {
+    const on = () => setModels(readyCount());
+    window.addEventListener(MODELS_EVENT, on);
+    return () => window.removeEventListener(MODELS_EVENT, on);
+  }, []);
+  const epoch = `${p.epoch}|m${models}`;
   const hoverT = useRef<number | null>(null);
   const hover = (next: Recipe | null) => {
     if (hoverT.current) window.clearTimeout(hoverT.current);
@@ -167,12 +176,16 @@ export function Looks(p: LooksProps) {
           <Thumb {...ft("none")} label="NONE" selected={!active} onSelect={() => p.films.pick("none")} />
           {list.map((s) => {
             const at = stack.flatMap((l, i) => (l.film === s.id ? [i + 1] : []));
+            const missing = missingFor(s.recipe);
+            const tile = ft(s.id);
             return (
               <Thumb
                 key={s.id}
-                {...ft(s.id)}
+                {...tile}
+                onHover={missing.length ? undefined : tile.onHover}
+                placeholder={missing.length ? `TAP TO LOAD\n${missing.map((k) => MODEL_SIZE[k]).join(" + ")}` : undefined}
                 label={s.name}
-                sub={best ? s.hint : undefined}
+                sub={s.hint}
                 starred={p.favorites.includes(s.id)}
                 selected={active?.film === s.id}
                 badge={stack.length > 1 && at.length ? at.join("·") : undefined}

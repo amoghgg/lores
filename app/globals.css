@@ -839,6 +839,20 @@ input[type="range"],
   color: rgb(var(--lime));
 }
 
+.thumb-defer {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 8px 28px;
+  text-align: center;
+  white-space: pre-line;
+  line-height: 1.5;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: rgb(var(--ink-700));
+  background: repeating-linear-gradient(135deg, rgb(var(--ink-200)) 0 6px, rgb(var(--ink-300)) 6px 12px);
+}
 .thumb-sub {
   font-size: 10px;
   line-height: 1.25;

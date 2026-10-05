@@ -22,6 +22,8 @@ type Props = {
   onAdd?: () => void;
   /** Positions of this look in the film stack (1-based), shown as a badge. */
   badge?: string;
+  /** Don't render a preview; show this note instead (e.g. a model download). */
+  placeholder?: string;
   className?: string;
   aspect?: string;
 };
@@ -44,6 +46,7 @@ export function Thumb({
   onHover,
   onAdd,
   badge,
+  placeholder,
   className = "",
   aspect,
 }: Props) {
@@ -82,7 +85,7 @@ export function Thumb({
       return;
     }
     setReady(false);
-    if (!visible) return;
+    if (!visible || placeholder) return;
     let live = true;
     void thumbs.render(recipe, view, size, group).then((c) => live && put(c));
     return () => {
@@ -90,7 +93,7 @@ export function Thumb({
     };
     // recipe identity changes every render; key on its code via epoch+label.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visible, epoch, view, size, JSON.stringify(recipe)]);
+  }, [visible, epoch, view, size, placeholder, JSON.stringify(recipe)]);
 
   return (
     <button
@@ -102,7 +105,11 @@ export function Thumb({
       style={aspect ? { aspectRatio: aspect } : undefined}
       title={sub ? `${label} — ${sub}` : label}
     >
-      <div ref={holder} className={`thumb-img ${ready ? "" : "thumb-wait"}`} />
+      {placeholder ? (
+        <div className="thumb-img thumb-defer">{placeholder}</div>
+      ) : (
+        <div ref={holder} className={`thumb-img ${ready ? "" : "thumb-wait"}`} />
+      )}
       {badge && <span className="thumb-badge">{badge}</span>}
       {onAdd && (
         <span

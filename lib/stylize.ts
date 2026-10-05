@@ -5,6 +5,7 @@
 // pipeline — so grain, the PIXEL tab and saving all still apply on top.
 
 import type { FilmRecipe } from "./film";
+import { markReady } from "./models";
 
 export type StylizeKind = FilmRecipe["stylize"];
 
@@ -39,6 +40,7 @@ function getSegmenter(): Promise<Segmenter | null> {
           outputConfidenceMasks: true,
           outputCategoryMask: false,
         });
+        markReady("segment");
         return seg as unknown as Segmenter;
       } catch (err) {
         // Flag and carry on: cut-out looks fall back to the full frame.
@@ -696,6 +698,7 @@ function getDepth(): Promise<DepthPipe> {
       for (const opts of tries) {
         try {
           const pipe = await t.pipeline("depth-estimation", DEPTH_MODEL, opts);
+          markReady("depth");
           return {
             run: async (c: HTMLCanvasElement) => {
               const out = await pipe(t.RawImage.fromCanvas(c));
@@ -838,7 +841,9 @@ async function depthLook(src: Src, w: number, h: number, kind: StylizeKind, bg: 
 // way 4:2:0 macroblocks smear colour, and a real JPEG crunch follows.
 // ───────────────────────────────────────────────────────────────────────────
 
-function mosh(src: Src, w: number, h: number, seed: number, melt: boolean): ImageData {
+/** `t` (0..1, the STRENGTH slider) is how hard it moshes: how many blocks
+ *  lose their keyframe, how far vectors push, how many times they repeat. */
+function mosh(src: Src, w: number, h: number, seed: number, melt: boolean, t: number): ImageData {
   const { data } = draw(src, w, h);
   const B = Math.max(8, Math.round(Math.max(w, h) / 60));
   const bw = Math.ceil(w / B);
@@ -854,7 +859,7 @@ function mosh(src: Src, w: number, h: number, seed: number, melt: boolean): Imag
   const vx = new Float32Array(bw * bh);
   const vy = new Float32Array(bw * bh);
   const on = new Uint8Array(bw * bh);
-  const step = Math.max(1.5, Math.max(w, h) * 0.004);
+  const step = Math.max(1.5, Math.max(w, h) * 0.004) * (0.6 + 0.6 * t);
   const bandA = rand();
   const bandB = rand();
   for (let by = 0; by < bh; by++)
@@ -877,12 +882,12 @@ function mosh(src: Src, w: number, h: number, seed: number, melt: boolean): Imag
         vy[k] = Math.sin(ang * 1.7) * step * (0.6 + Math.abs(mag) * 0.4);
       }
       // Which macroblocks lost their I-frame: blobs plus a couple of bands.
-      const inBand = Math.abs(v - bandA) < 0.09 || Math.abs(v - bandB) < 0.05;
-      on[k] = melt ? (mag > -0.4 ? 1 : 0) : mag > 0.1 || inBand ? 1 : 0;
+      const inBand = t > 0.45 && (Math.abs(v - bandA) < 0.09 || Math.abs(v - bandB) < 0.05);
+      on[k] = melt ? (mag > 1.6 - 3.2 * t ? 1 : 0) : mag > 2.2 - 3.2 * t || inBand ? 1 : 0;
     }
   let cur = new Uint8ClampedArray(data);
   let nxt = new Uint8ClampedArray(data);
-  const iters = melt ? 26 : 16;
+  const iters = Math.max(1, Math.round(melt ? 6 + 32 * t : 4 + 22 * t));
   for (let it = 0; it < iters; it++) {
     nxt.set(cur);
     for (let by = 0; by < bh; by++)
@@ -946,13 +951,18 @@ function mosh(src: Src, w: number, h: number, seed: number, melt: boolean): Imag
 
 const cache = new WeakMap<object, Map<string, Promise<ImageBitmap>>>();
 
-function restyle(src: Src, kind: StylizeKind, bg: string, seed: number): Promise<ImageBitmap> {
+const MOSH = new Set<StylizeKind>(["mosh", "melt"]);
+/** Looks whose STRENGTH changes the restyle itself, not a fade. */
+export const intensityRestyle = (kind: StylizeKind) => MOSH.has(kind);
+const quant = (a: number) => Math.round(Math.max(0, Math.min(1, a)) * 20) / 20;
+
+function restyle(src: Src, kind: StylizeKind, bg: string, seed: number, amount = 1): Promise<ImageBitmap> {
   let m = cache.get(src);
   if (!m) {
     m = new Map();
     cache.set(src, m);
   }
-  const key = kind === "mosh" || kind === "melt" ? `${kind}|${seed}` : `${kind}|${bg}`;
+  const key = MOSH.has(kind) ? `${kind}|${seed}|${quant(amount)}` : `${kind}|${bg}`;
   const hit = m.get(key);
   if (hit) return hit;
   const job = (async () => {
@@ -965,7 +975,7 @@ function restyle(src: Src, kind: StylizeKind, bg: string, seed: number): Promise
     else if (kind === "airbrush") img = await lowPoly(src, w, h, false, bg, seed);
     else if (kind === "sticker") img = await sticker(src, w, h);
     else if (kind === "impasto") img = impasto(src, w, h);
-    else if (kind === "mosh" || kind === "melt") img = mosh(src, w, h, seed, kind === "melt");
+    else if (MOSH.has(kind)) img = mosh(src, w, h, seed, kind === "melt", quant(amount));
     else img = await depthLook(src, w, h, kind, bg);
     // Back up to the source size so the rest of the pipeline is unchanged.
     const small = await createImageBitmap(img);
@@ -975,12 +985,23 @@ function restyle(src: Src, kind: StylizeKind, bg: string, seed: number): Promise
   })();
   m.set(key, job);
   job.catch(() => m!.delete(key));
+  if (MOSH.has(kind)) {
+    // Each strength step is its own full-size bitmap: keep only the latest
+    // few. Freed a moment later so a render still using one can finish.
+    const moshKeys = [...m.keys()].filter((k) => MOSH.has(k.split("|")[0] as StylizeKind));
+    for (const old of moshKeys.slice(0, Math.max(0, moshKeys.length - 6))) {
+      const p = m.get(old)!;
+      m.delete(old);
+      p.then((b) => setTimeout(() => b.close(), 3000)).catch(() => undefined);
+    }
+  }
   return job;
 }
 
 /**
  * The restyled source, blended with the original by `amount` (the STRENGTH
- * slider), ready to feed the normal pipeline.
+ * slider) — except datamosh, where strength drives the mosh itself — ready
+ * to feed the normal pipeline.
  */
 export async function stylizedSource(
   src: Src,
@@ -989,6 +1010,8 @@ export async function stylizedSource(
   amount: number,
   seed: number
 ): Promise<{ bitmap: ImageBitmap; owned: boolean }> {
+  // Datamosh: strength = how much it moshes, so no fade.
+  if (MOSH.has(kind)) return { bitmap: await restyle(src, kind, bg, seed, amount), owned: false };
   const styled = await restyle(src, kind, bg, seed);
   // The cached bitmap is shared — never close it. A blend is ours to free.
   if (amount >= 0.999) return { bitmap: styled, owned: false };

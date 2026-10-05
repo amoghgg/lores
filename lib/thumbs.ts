@@ -9,6 +9,7 @@
 //            detail reads at true scale.
 
 import { processBest } from "./pipeline";
+import { missingFor } from "./models";
 import {
   encodeRecipe,
   toSettings,
@@ -175,6 +176,11 @@ class ThumbRenderer {
         const cached = this.cache.get(job.key);
         if (cached) {
           job.resolve(cached);
+          continue;
+        }
+        // Never download a model just to draw a thumbnail.
+        if (toFilms(job.recipe).some((f) => missingFor(f.recipe).length)) {
+          job.resolve(null);
           continue;
         }
         const src = this.source;

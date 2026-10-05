@@ -1,3 +1,5 @@
+import { markReady } from "./models";
+
 // What's actually in the photo, for the blob-tracking looks: objects
 // (EfficientDet, the 80 COCO classes) and faces with their landmarks
 // (BlazeFace: eyes, nose, mouth, ears). MediaPipe Tasks, self-hosted, on
@@ -63,6 +65,7 @@ function getDetectors() {
           })
         ),
       ]);
+      markReady("detect");
       return { objects: objects as unknown as Detector | null, faces: faces as unknown as Detector | null };
     })();
   }
