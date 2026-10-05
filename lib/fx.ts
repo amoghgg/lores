@@ -4,6 +4,7 @@
 // Trinitron, a datamosh printed on a receipt.
 
 import { hash2 } from "./film";
+import type { Thing } from "./detect";
 
 export type FxKind = "none" | "crt" | "receipt" | "onebit" | "blob";
 
@@ -445,7 +446,7 @@ function crt(c: HTMLCanvasElement, p: FxParams) {
 // difference-of-Gaussians detector, boxed, numbered, joined to neighbours.
 // ───────────────────────────────────────────────────────────────────────────
 
-type Blob = { x: number; y: number; r: number; score: number };
+type Blob = { x: number; y: number; r: number; score: number; bright: boolean };
 
 function boxBlurF(a: Float32Array, w: number, h: number, r: number): Float32Array {
   if (r < 1) return a;
@@ -483,12 +484,14 @@ function findBlobs(c: HTMLCanvasElement, seed: number): { blobs: Blob[]; sw: num
   const wide = scales.map((s) => boxBlurF(boxBlurF(L, sw, sh, Math.round(s * 1.8)), sw, sh, Math.round(s * 1.8)));
   const best = new Float32Array(sw * sh);
   const bestS = new Uint8Array(sw * sh);
+  const bright = new Uint8Array(sw * sh);
   for (let si = 0; si < scales.length; si++) {
     for (let i = 0; i < best.length; i++) {
       const v = Math.abs(blur[si][i] - wide[si][i]) * Math.sqrt(scales[si]);
       if (v > best[i]) {
         best[i] = v;
         bestS[i] = si;
+        bright[i] = blur[si][i] > wide[si][i] ? 1 : 0;
       }
     }
   }
@@ -506,7 +509,7 @@ function findBlobs(c: HTMLCanvasElement, seed: number): { blobs: Blob[]; sw: num
             peak = false;
             break;
           }
-      if (peak) cand.push({ x, y, r: scales[bestS[i]] * 1.9 + 3, score: v * (0.55 + 0.9 * hash2(x, y, seed)) });
+      if (peak) cand.push({ x, y, r: scales[bestS[i]] * 1.9 + 3, score: v * (0.55 + 0.9 * hash2(x, y, seed)), bright: !!bright[i] });
     }
   cand.sort((a, b) => b.score - a.score);
   const want = 9 + Math.floor(hash2(seed, 1, 99) * 6);
@@ -519,15 +522,36 @@ function findBlobs(c: HTMLCanvasElement, seed: number): { blobs: Blob[]; sw: num
   return { blobs, sw, sh };
 }
 
-function blob(c: HTMLCanvasElement, p: FxParams, seed: number) {
+type Tracked = { id: number; label: string; kind: Thing["kind"] | "spot"; x0: number; y0: number; bw: number; bh: number; cx: number; cy: number };
+
+function blob(c: HTMLCanvasElement, p: FxParams, seed: number, things: Thing[] | undefined) {
   const { width: w, height: h } = c;
   const S = Math.min(w, h);
-  const { blobs, sw } = findBlobs(c, seed);
-  const k = w / sw;
-  const boxes = blobs.map((b, i) => {
-    const r = b.r * k;
-    return { id: i + 1, x: b.x * k, y: b.y * k, x0: Math.max(0, b.x * k - r), y0: Math.max(0, b.y * k - r), s: r * 2 };
-  });
+  const boxes: Tracked[] = [];
+  // What the detectors actually recognised, with their own labels and scores.
+  for (const t of things ?? []) {
+    const x0 = Math.max(0, t.x * w);
+    const y0 = Math.max(0, t.y * h);
+    const bw = Math.min(w - x0, t.w * w);
+    const bh = Math.min(h - y0, t.h * h);
+    if (bw < 2 || bh < 2) continue;
+    const label = t.kind === "part" ? t.label : `${t.label} ${t.score.toFixed(2)}`;
+    boxes.push({ id: 0, label, kind: t.kind, x0, y0, bw, bh, cx: x0 + bw / 2, cy: y0 + bh / 2 });
+  }
+  // Nothing recognised (a landscape, an abstract): mark the strongest bright
+  // and dark spots — and call them exactly that.
+  if (!boxes.length) {
+    const { blobs, sw } = findBlobs(c, seed);
+    const k = w / sw;
+    for (const b of blobs.slice(0, 8)) {
+      const r = b.r * k;
+      const x0 = Math.max(0, b.x * k - r);
+      const y0 = Math.max(0, b.y * k - r);
+      boxes.push({ id: 0, label: b.bright ? "BRIGHT SPOT" : "DARK SPOT", kind: "spot", x0, y0, bw: r * 2, bh: r * 2, cx: b.x * k, cy: b.y * k });
+    }
+  }
+  boxes.forEach((b, i) => (b.id = i + 1));
+  const main = boxes.filter((b) => b.kind !== "part");
   const cx = ctx2d(c);
   if (p.fxMode === "mono") {
     // Everything drops to dim grey; only what the tracker locked on keeps colour.
@@ -540,52 +564,77 @@ function blob(c: HTMLCanvasElement, p: FxParams, seed: number) {
       d[i] = d[i + 1] = d[i + 2] = l;
     }
     cx.putImageData(img, 0, 0);
-    for (const b of boxes) cx.drawImage(orig, b.x0, b.y0, b.s, b.s, b.x0, b.y0, b.s, b.s);
+    for (const b of main) cx.drawImage(orig, b.x0, b.y0, b.bw, b.bh, b.x0, b.y0, b.bw, b.bh);
   }
   cx.save();
   if (p.fxMode === "invert") {
+    // Invert the union of the boxes (nested boxes would otherwise flip back).
+    const mask = canvas(w, h);
+    const mx = mask.getContext("2d")!;
+    mx.fillStyle = "#ffffff";
+    for (const b of main) mx.fillRect(b.x0, b.y0, b.bw, b.bh);
     cx.globalCompositeOperation = "difference";
-    cx.fillStyle = "#ffffff";
-    for (const b of boxes) cx.fillRect(b.x0, b.y0, b.s, b.s);
+    cx.drawImage(mask, 0, 0);
     cx.globalCompositeOperation = "source-over";
   }
   const lw = Math.max(1, Math.round(S * 0.0022));
-  // Each blob wired to its two nearest neighbours.
+  // Things wired to their two nearest neighbours; face parts to their face.
   cx.strokeStyle = "rgba(255,255,255,0.6)";
   cx.lineWidth = Math.max(1, lw * 0.6);
   const seen = new Set<string>();
   cx.beginPath();
-  for (const a of boxes) {
-    const near = boxes
+  for (const a of main) {
+    const near = main
       .filter((b) => b !== a)
-      .sort((p1, p2) => Math.hypot(p1.x - a.x, p1.y - a.y) - Math.hypot(p2.x - a.x, p2.y - a.y))
+      .sort((p1, p2) => Math.hypot(p1.cx - a.cx, p1.cy - a.cy) - Math.hypot(p2.cx - a.cx, p2.cy - a.cy))
       .slice(0, 2);
     for (const b of near) {
       const key = a.id < b.id ? `${a.id}-${b.id}` : `${b.id}-${a.id}`;
       if (seen.has(key)) continue;
       seen.add(key);
-      cx.moveTo(a.x, a.y);
-      cx.lineTo(b.x, b.y);
+      cx.moveTo(a.cx, a.cy);
+      cx.lineTo(b.cx, b.cy);
     }
+  }
+  const faces = boxes.filter((b) => b.kind === "face");
+  for (const part of boxes.filter((b) => b.kind === "part")) {
+    const f = faces.find((fc) => part.cx >= fc.x0 - fc.bw * 0.3 && part.cx <= fc.x0 + fc.bw * 1.3 && part.cy >= fc.y0 - fc.bh * 0.3 && part.cy <= fc.y0 + fc.bh * 1.3);
+    if (!f) continue;
+    cx.moveTo(f.cx, f.cy);
+    cx.lineTo(part.cx, part.cy);
   }
   cx.stroke();
   cx.strokeStyle = "#ffffff";
-  cx.lineWidth = lw;
-  for (const b of boxes) cx.strokeRect(Math.round(b.x0) + 0.5, Math.round(b.y0) + 0.5, Math.round(b.s), Math.round(b.s));
+  for (const b of boxes) {
+    cx.lineWidth = b.kind === "part" ? Math.max(1, lw * 0.7) : lw;
+    cx.strokeRect(Math.round(b.x0) + 0.5, Math.round(b.y0) + 0.5, Math.round(b.bw), Math.round(b.bh));
+  }
   cx.fillStyle = "#ffffff";
   const dotR = Math.max(1, lw * 1.2);
-  for (const b of boxes) cx.fillRect(b.x - dotR, b.y - dotR, dotR * 2, dotR * 2);
+  for (const b of main) cx.fillRect(b.cx - dotR, b.cy - dotR, dotR * 2, dotR * 2);
   // Labels only where they'd be legible (not on thumbnails).
   if (p.fxLabels && S >= 360) {
     const size = Math.round(S * 0.02);
-    cx.font = `600 ${size}px ${MONO}`;
     cx.textBaseline = "bottom";
-    cx.shadowColor = "rgba(0,0,0,0.55)";
+    cx.shadowColor = "rgba(0,0,0,0.6)";
     cx.shadowBlur = size * 0.25;
+    // Place each label above its box, else below, else just inside — the
+    // first spot that doesn't collide with a label already drawn.
+    const placed: { x: number; y: number; w: number; h: number }[] = [];
+    const hits = (r: { x: number; y: number; w: number; h: number }) =>
+      placed.some((q) => r.x < q.x + q.w && q.x < r.x + r.w && r.y < q.y + q.h && q.y < r.y + r.h);
     for (const b of boxes) {
-      const label = `#${String(b.id).padStart(2, "0")}  ${(b.x / w).toFixed(3)} ${(b.y / h).toFixed(3)}`;
-      const ty = b.y0 > size * 1.4 ? b.y0 - lw * 2 : b.y0 + b.s + size + lw * 2;
-      cx.fillText(label, Math.min(b.x0, w - cx.measureText(label).width - 2), ty);
+      const part = b.kind === "part";
+      const fs = part ? Math.round(size * 0.75) : size;
+      cx.font = `600 ${fs}px ${MONO}`;
+      const label = part ? b.label : `#${String(b.id).padStart(2, "0")} ${b.label}`;
+      const tw = cx.measureText(label).width;
+      const tx = Math.max(2, Math.min(b.x0, w - tw - 2));
+      const ys = [b.y0 - lw * 2, b.y0 + b.bh + fs + lw * 2, b.y0 + fs + lw * 3, b.y0 - lw * 2 - fs * 1.1, b.y0 + b.bh + fs * 2.2];
+      const fits = ys.filter((y) => y - fs >= 0 && y <= h);
+      const y = fits.find((yy) => !hits({ x: tx, y: yy - fs, w: tw, h: fs })) ?? fits[0] ?? ys[0];
+      placed.push({ x: tx, y: y - fs, w: tw, h: fs });
+      cx.fillText(label, tx, y);
     }
   }
   cx.restore();
@@ -594,14 +643,22 @@ function blob(c: HTMLCanvasElement, p: FxParams, seed: number) {
 // ───────────────────────────────────────────────────────────────────────────
 
 /** Run the layer's effect in place; `amount` < 1 mixes the original back in. */
-export function applyFx(c: HTMLCanvasElement, p: FxParams, seed: number, amount: number, frame: boolean) {
+export function applyFx(
+  c: HTMLCanvasElement,
+  p: FxParams,
+  seed: number,
+  amount: number,
+  frame: boolean,
+  /** What's in the picture (blob tracking labels real things). */
+  things?: Thing[]
+) {
   if (p.fx === "none" || amount <= 0) return;
   const cx = ctx2d(c);
   const before = amount < 0.999 ? cx.getImageData(0, 0, c.width, c.height) : null;
   if (p.fx === "crt") crt(c, p);
   else if (p.fx === "receipt") receipt(c, p, seed, frame);
   else if (p.fx === "onebit") oneBit(c, p);
-  else if (p.fx === "blob") blob(c, p, seed);
+  else if (p.fx === "blob") blob(c, p, seed, things);
   if (before) {
     const after = cx.getImageData(0, 0, c.width, c.height);
     const a = after.data;

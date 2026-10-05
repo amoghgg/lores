@@ -4,6 +4,7 @@
 
 import { hash2, type FilmControls, type FilmRecipe } from "./film";
 import { applyFx } from "./fx";
+import type { Thing } from "./detect";
 
 const MONO = 'ui-monospace, "SF Mono", Menlo, Consolas, monospace';
 
@@ -127,12 +128,13 @@ export function needsPost(r: FilmRecipe): boolean {
 export async function postFilm(
   canvas: HTMLCanvasElement,
   r: FilmRecipe,
-  c: Pick<FilmControls, "seed" | "amount" | "frame">
+  c: Pick<FilmControls, "seed" | "amount" | "frame">,
+  things?: Thing[]
 ) {
   const seed = c.seed;
   const ctx = canvas.getContext("2d");
   if (!ctx) return canvas;
-  if (r.fx !== "none") applyFx(canvas, r, seed, c.amount, c.frame);
+  if (r.fx !== "none") applyFx(canvas, r, seed, c.amount, c.frame, things);
   if (r.hud !== "none") drawHud(ctx, canvas.width, canvas.height, r.hud, seed);
   if (r.crunch > 0) {
     // 1 → three passes at very low quality (deep-fried); 0.5 → one mid pass (digicam).

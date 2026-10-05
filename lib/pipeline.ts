@@ -294,8 +294,17 @@ export function asFilms(film: FilmInput | FilmInput[] | null | undefined): FilmI
   return (Array.isArray(film) ? film : [film]).filter((f) => f.controls.amount > 0);
 }
 
-async function runPost(canvas: HTMLCanvasElement, films: FilmInput[]) {
-  for (const f of films) if (needsPost(f.recipe)) await postFilm(canvas, f.recipe, f.controls);
+async function runPost(canvas: HTMLCanvasElement, films: FilmInput[], source: HTMLImageElement | ImageBitmap) {
+  // Tracking looks label what's really there: detect once per image.
+  let things: import("./detect").Thing[] | undefined;
+  if (films.some((f) => f.recipe.fx === "blob")) {
+    const { detectThings } = await import("./detect");
+    things = await detectThings(source).catch((err) => {
+      console.warn("[pixel] detection failed — tracking falls back to bright/dark spots", err);
+      return [];
+    });
+  }
+  for (const f of films) if (needsPost(f.recipe)) await postFilm(canvas, f.recipe, f.controls, things);
 }
 
 async function renderBest(
@@ -338,7 +347,7 @@ async function renderBest(
           readback: true,
         }), 15_000, "GPU render");
         cpuGrid?.close();
-        await runPost(r.canvas, films);
+        await runPost(r.canvas, films, source);
         return { ...r, engine: "gpu" };
       } catch (err) {
         console.warn("[pixel] GPU pipeline failed, falling back to CPU:", err);
@@ -347,7 +356,7 @@ async function renderBest(
     }
   }
   const r = process(source, settings, overlay, films);
-  await runPost(r.canvas, films);
+  await runPost(r.canvas, films, source);
   return { ...r, engine: "cpu" };
 }
 
