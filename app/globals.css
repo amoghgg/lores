@@ -1535,39 +1535,224 @@ input[type="range"],
 }
 
 /* ─── Video ──────────────────────────────────────────────────────────── */
-.vbar {
-  position: absolute;
-  left: 50%;
-  top: 12px;
-  transform: translateX(-50%);
-  width: min(520px, calc(100% - 24px));
+/* The picture and, for video, the dock under it. */
+.viewer-col {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.viewer-col > .viewer {
+  flex: 1 1 auto;
+}
+
+/* Video dock: play, filmstrip timeline with trim handles, crop + size. */
+.vdock {
+  flex: none;
+  display: grid;
+  gap: 8px;
+  padding: 8px 12px 10px;
+  border-top: 1px solid rgb(var(--ink-300));
+  background: rgb(var(--ink-50));
+}
+.vdock-row {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 6px 12px 6px 6px;
-  background: rgb(var(--ink-50) / 0.88);
-  border: 1px solid rgb(var(--ink-500));
-  backdrop-filter: blur(6px);
-  z-index: 3;
+  min-width: 0;
 }
-.vbar-play {
-  width: 34px;
-  height: 30px;
+.vdock-play {
+  width: 40px;
+  height: 44px;
   flex: none;
   font-size: 13px;
   color: rgb(var(--on-fill));
   background: rgb(var(--fill));
 }
-.vbar-seek {
+.vdock-track {
+  position: relative;
   flex: 1;
   min-width: 0;
-  accent-color: rgb(var(--lime));
+  /* room for the trim handles, which sit just outside the kept stretch */
+  margin: 0 14px;
+  height: 44px;
+  cursor: pointer;
+  touch-action: none;
+  background: rgb(var(--ink-300));
 }
-.vbar-time {
+.vdock-strip {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  overflow: hidden;
+  pointer-events: none;
+}
+.vdock-thumb {
+  flex: 1 1 0;
+  min-width: 0;
+  height: 100%;
+  object-fit: cover;
+}
+.vdock-shade {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: rgb(0 0 0 / 0.6);
+  pointer-events: none;
+}
+.vdock-window {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border-top: 2px solid rgb(var(--lime));
+  border-bottom: 2px solid rgb(var(--lime));
+  pointer-events: none;
+}
+.vdock-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 14px;
+  padding: 0;
+  background: rgb(var(--lime));
+  cursor: ew-resize;
+  touch-action: none;
+}
+.vdock-handle::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 2px;
+  height: 16px;
+  transform: translate(-50%, -50%);
+  background: rgb(0 0 0 / 0.55);
+}
+.vdock-handle-start {
+  transform: translateX(-100%);
+}
+.vdock-head {
+  position: absolute;
+  top: -4px;
+  bottom: -4px;
+  width: 2px;
+  margin-left: -1px;
+  background: rgb(var(--ink-900));
+  box-shadow: 0 0 0 1px rgb(0 0 0 / 0.35);
+  pointer-events: none;
+}
+.vdock-time {
   flex: none;
   font-size: 12px;
   font-variant-numeric: tabular-nums;
   color: rgb(var(--ink-800));
+}
+.vdock-opts {
+  flex-wrap: wrap;
+  row-gap: 6px;
+}
+.vdock-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.vdock-label {
+  font-size: 9px;
+  letter-spacing: 0.24em;
+  color: rgb(var(--ink-700));
+}
+.vdock-chips {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.vdock-chips .chip-done {
+  border-color: rgb(var(--fill));
+  background: rgb(var(--fill));
+  color: rgb(var(--on-fill));
+}
+.vdock-out {
+  margin-left: auto;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: rgb(var(--ink-700));
+}
+
+/* Framing a crop: the whole frame, the kept part lit. */
+.crop-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 12px;
+  background: rgb(var(--ink-50));
+  container-type: size;
+}
+.crop-frame {
+  position: relative;
+  display: flex;
+  overflow: hidden;
+}
+.crop-host {
+  display: flex;
+  max-width: 100%;
+  max-height: 100%;
+}
+.crop-canvas {
+  display: block;
+  max-width: calc(100cqw - 24px);
+  max-height: calc(100cqh - 54px);
+}
+.crop-box {
+  position: absolute;
+  cursor: move;
+  touch-action: none;
+  outline: 2px solid rgb(var(--lime));
+  box-shadow: 0 0 0 9999px rgb(0 0 0 / 0.6);
+}
+.crop-third {
+  position: absolute;
+  pointer-events: none;
+  border-color: rgb(255 255 255 / 0.35);
+  border-style: solid;
+  border-width: 0;
+}
+.crop-third-v {
+  left: 33.333%;
+  right: 33.333%;
+  top: 0;
+  bottom: 0;
+  border-left-width: 1px;
+  border-right-width: 1px;
+}
+.crop-third-h {
+  top: 33.333%;
+  bottom: 33.333%;
+  left: 0;
+  right: 0;
+  border-top-width: 1px;
+  border-bottom-width: 1px;
+}
+.crop-corner {
+  position: absolute;
+  width: 18px;
+  height: 18px;
+  border: 3px solid rgb(var(--lime));
+  touch-action: none;
+}
+.crop-tl { left: 0; top: 0; border-right: 0; border-bottom: 0; cursor: nwse-resize; }
+.crop-tr { right: 0; top: 0; border-left: 0; border-bottom: 0; cursor: nesw-resize; }
+.crop-bl { left: 0; bottom: 0; border-right: 0; border-top: 0; cursor: nesw-resize; }
+.crop-br { right: 0; bottom: 0; border-left: 0; border-top: 0; cursor: nwse-resize; }
+.crop-hint {
+  font-size: 10px;
+  letter-spacing: 0.2em;
+  color: rgb(var(--ink-700));
 }
 .vjob {
   position: fixed;

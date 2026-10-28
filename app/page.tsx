@@ -41,8 +41,26 @@ import { readRecipe } from "@/lib/pngmeta";
 import { renderExport, saveBlob, toBlob, type ExportOptions } from "@/lib/exporter";
 import { SAMPLE, randomFact } from "@/lib/sample";
 import { VideoSession } from "@/lib/session";
-import { PREVIEW_LONG, exportVideo, grabFrame, isVideoFile, loadVideo, seekTo, type LoadedVideo } from "@/lib/video";
-import { VideoBar } from "@/components/v2/VideoBar";
+import {
+  ASPECTS,
+  FULL_FRAME,
+  PREVIEW_LONG,
+  centredCrop,
+  exportVideo,
+  filmstrip,
+  grabFrame,
+  isVideoFile,
+  loadVideo,
+  outputSize,
+  seekTo,
+  type AspectId,
+  type Crop,
+  type LoadedVideo,
+  type SizeId,
+  type Trim,
+} from "@/lib/video";
+import { VideoDock } from "@/components/v2/VideoDock";
+import { CropBox } from "@/components/v2/CropBox";
 
 // Pixel art doesn't need 12 MP; film looks read fine at 2.5 MP and the GPU
 // stays well under a frame.
@@ -124,7 +142,20 @@ export default function Page() {
   const frameRef = useRef<{ bitmap: ImageBitmap; time: number } | null>(null);
   const retired = useRef<ImageBitmap[]>([]);
   const [playing, setPlaying] = useState(false);
-  const [vTime, setVTime] = useState(0);
+  const playingRef = useRef(false);
+  playingRef.current = playing;
+  // What SAVE VIDEO keeps: a stretch of the clip, a part of the frame, a size.
+  const [trim, setTrim] = useState<Trim>({ start: 0, end: 0 });
+  const trimRef = useRef(trim);
+  trimRef.current = trim;
+  const [crop, setCrop] = useState<Crop>(FULL_FRAME);
+  const cropRef = useRef(crop);
+  cropRef.current = crop;
+  const [aspect, setAspect] = useState<AspectId>("original");
+  const [vSize, setVSize] = useState<SizeId>("1080");
+  /** The whole frame while framing a crop; null when not cropping. */
+  const [cropFrame, setCropFrame] = useState<HTMLCanvasElement | null>(null);
+  const [strip, setStrip] = useState<HTMLCanvasElement[]>([]);
   const [videoJob, setVideoJob] = useState<{
     progress: number;
     /** Seconds of video rendered so far, and the clip length. */
@@ -336,36 +367,47 @@ export default function Page() {
   const dirty = useRef(false);
   const sourceRef = useRef(source);
   sourceRef.current = source;
+  // A call made while a render is running marks it dirty and waits for the
+  // re-render, so callers (playback, scrubbing) never outrun the pipeline.
+  const inflight = useRef<Promise<void> | null>(null);
   const renderNow = useCallback(async () => {
     if (rendering.current) {
       dirty.current = true;
-      return;
+      return inflight.current ?? undefined;
     }
     rendering.current = true;
-    setBusy(true);
-    try {
-      do {
-        dirty.current = false;
-        const src = sourceRef.current;
-        if (!src) break;
-        const v = videoRef.current;
-        const fr = v ? frameRef.current : null;
-        const r = await processBest(
-          fr?.bitmap ?? src.image,
-          settingsRef.current,
-          overlayRef.current,
-          filmRef.current,
-          "main",
-          v ? { time: fr?.time ?? 0, session: sessionRef.current } : undefined
-        );
-        if (!dirty.current) setOutput(r.canvas);
-      } while (dirty.current);
-    } catch (err) {
-      console.error("[pixel] render failed", err);
-    } finally {
-      rendering.current = false;
-      setBusy(false);
-    }
+    // Playback renders every frame; the busy line would just flicker.
+    if (!playingRef.current) setBusy(true);
+    const run = (async () => {
+      try {
+        do {
+          dirty.current = false;
+          const src = sourceRef.current;
+          if (!src) break;
+          const v = videoRef.current;
+          const fr = v ? frameRef.current : null;
+          const r = await processBest(
+            fr?.bitmap ?? src.image,
+            settingsRef.current,
+            overlayRef.current,
+            filmRef.current,
+            "main",
+            v ? { time: fr?.time ?? 0, session: sessionRef.current } : undefined
+          );
+          // A stale still is skipped (a newer one is coming); a played frame
+          // is always shown, or slow looks would never update.
+          if (!dirty.current || playingRef.current) setOutput(r.canvas);
+        } while (dirty.current);
+      } catch (err) {
+        console.error("[pixel] render failed", err);
+      } finally {
+        rendering.current = false;
+        inflight.current = null;
+        setBusy(false);
+      }
+    })();
+    inflight.current = run;
+    return run;
   }, []);
 
   useEffect(() => {
@@ -509,7 +551,15 @@ export default function Page() {
     sessionRef.current.reset();
     setFrame(frame, v.el.currentTime);
     setVideo(v);
-    setVTime(v.el.currentTime);
+    setTrim({ start: 0, end: v.duration });
+    setCrop(FULL_FRAME);
+    cropRef.current = FULL_FRAME;
+    setAspect("original");
+    setCropFrame(null);
+    setStrip([]);
+    filmstrip(blob, 12, 72)
+      .then((s) => videoRef.current === v && setStrip(s))
+      .catch((err) => console.warn("[pixel] filmstrip failed", err));
     const next: Source = { image: poster, filename, width: poster.width, height: poster.height, id: `${filename}:${blob.size}:${Date.now()}` };
     setSource((prev) => {
       if (prev) freeLater(prev.image);
@@ -528,30 +578,91 @@ export default function Page() {
     say(`VIDEO · ${Math.round(v.duration)}s · TAP ▶ TO PLAY`, 2600);
   }
 
-  // Playback: each shown frame goes through the pipeline; slow looks drop frames.
+  // Playback: each new video frame goes through the pipeline. One frame is
+  // in flight at a time; frames that arrive meanwhile are skipped, so slow
+  // looks drop frames instead of falling behind the sound. Plays the trimmed
+  // stretch on a loop.
   useEffect(() => {
     const v = video;
     if (!v || !playing) return;
+    const el = v.el;
     let stop = false;
-    void v.el.play().catch(() => setPlaying(false));
-    (async () => {
-      while (!stop) {
-        const t = v.el.currentTime;
-        // Playback only has to look right at screen size: ~¼ the pixels.
-        const bmp = await grabFrame(v, PREVIEW_LONG);
+    let handle = 0;
+    // Paced by animation frames, not requestVideoFrameCallback: that never
+    // fires for this hidden <video> (it isn't composited). A frame whose time
+    // hasn't moved is skipped.
+    let shown = -1;
+    // A trim that runs to the end loops natively (seamless, and a video that
+    // has "ended" won't always restart); an earlier end is jumped from just
+    // before it's reached.
+    let last = el.currentTime;
+    const wrap = () => {
+      const tr = trimRef.current;
+      el.loop = tr.end >= el.duration - 0.05;
+      const t = el.currentTime;
+      if ((!el.loop && t >= tr.end - 0.03) || t < tr.start - 0.05 || el.ended) {
+        el.currentTime = tr.start;
+        if (el.paused) void el.play().catch(() => {});
+      }
+      // Back to the start: datamosh and tracking begin again.
+      if (el.currentTime < last - 0.1) sessionRef.current.reset();
+      last = el.currentTime;
+    };
+    const next = () => {
+      if (stop) return;
+      handle = requestAnimationFrame(() => void onFrame());
+    };
+    const onFrame = async () => {
+      if (stop) return;
+      wrap();
+      const t = el.currentTime;
+      if (t === shown || el.readyState < 2) return next();
+      shown = t;
+      try {
+        const bmp = await grabFrame(v, PREVIEW_LONG, cropRef.current);
         if (stop) {
           bmp.close();
-          break;
+          return;
         }
         setFrame(bmp, t);
         await renderNow();
-        setVTime(t);
-        await new Promise((r) => requestAnimationFrame(r));
+      } catch (err) {
+        console.warn("[pixel] preview frame failed", err);
       }
-    })();
+      next();
+    };
+    // Some decoders fail on a seek (a loop is one); reload and carry on from
+    // the start of the trim instead of freezing.
+    let recoveries = 0;
+    const recover = () => {
+      if (stop || ++recoveries > 3) return setPlaying(false);
+      console.warn("[pixel] video decode error, reloading", el.error?.message);
+      cancelAnimationFrame(handle);
+      el.load();
+      el.addEventListener(
+        "loadeddata",
+        () => {
+          if (stop) return;
+          el.currentTime = trimRef.current.start;
+          sessionRef.current.reset();
+          void el.play().then(next, () => setPlaying(false));
+        },
+        { once: true }
+      );
+    };
+    wrap();
+    el.addEventListener("timeupdate", wrap);
+    el.addEventListener("ended", wrap);
+    el.addEventListener("error", recover);
+    void el.play().then(next, () => setPlaying(false));
     return () => {
       stop = true;
-      v.el.pause();
+      cancelAnimationFrame(handle);
+      el.removeEventListener("timeupdate", wrap);
+      el.removeEventListener("ended", wrap);
+      el.removeEventListener("error", recover);
+      el.loop = false;
+      el.pause();
     };
   }, [video, playing, renderNow]);
 
@@ -560,9 +671,8 @@ export default function Page() {
   const settleFrame = useCallback(async () => {
     const v = videoRef.current;
     if (!v) return;
-    const bmp = await grabFrame(v);
+    const bmp = await grabFrame(v, undefined, cropRef.current);
     setFrame(bmp, v.el.currentTime);
-    setVTime(v.el.currentTime);
     void renderNow();
     const poster = await createImageBitmap(bmp);
     const id = `${v.filename}:${v.el.currentTime.toFixed(2)}:${Date.now()}`;
@@ -581,14 +691,81 @@ export default function Page() {
       window.setTimeout(() => void settleFrame(), 60);
     } else setPlaying(true);
   };
-  const scrubTo = async (t: number) => {
+  // Scrubbing and trimming: seeks are coalesced (only the latest position
+  // is chased), each shown at preview size; letting go renders it properly
+  // and picks playback back up if it was playing.
+  const seek = useRef({ busy: false, want: null as number | null, done: false, resume: false, active: false });
+  const seekPreview = async (t: number, done: boolean) => {
+    const v = videoRef.current;
+    if (!v) return;
+    const s = seek.current;
+    if (!s.active) {
+      s.active = true;
+      s.resume = playingRef.current;
+      if (playingRef.current) setPlaying(false);
+    }
+    s.want = t;
+    s.done ||= done;
+    if (s.busy) return;
+    s.busy = true;
+    try {
+      while (s.want !== null) {
+        const at = s.want;
+        s.want = null;
+        await seekTo(v, at);
+        if (s.want !== null) continue;
+        const bmp = await grabFrame(v, PREVIEW_LONG, cropRef.current);
+        setFrame(bmp, at);
+        await renderNow();
+      }
+    } finally {
+      s.busy = false;
+    }
+    if (s.done) {
+      const resume = s.resume;
+      Object.assign(s, { done: false, active: false, resume: false });
+      // A jump is a new keyframe for datamosh and a fresh start for tracking.
+      sessionRef.current.reset();
+      await settleFrame();
+      if (resume) setPlaying(true);
+    }
+  };
+  const changeTrim = (tr: Trim, done: boolean) => {
+    const moved = Math.abs(tr.start - trimRef.current.start) > 1e-4 ? tr.start : tr.end;
+    setTrim(tr);
+    trimRef.current = tr;
+    void seekPreview(Math.min(moved, tr.end - 0.04), done);
+  };
+
+  // Cropping: choosing a shape shows the whole frame with a box to place;
+  // DONE renders the cropped frame. ORIGINAL drops the crop.
+  const chooseAspect = async (a: AspectId) => {
     const v = videoRef.current;
     if (!v) return;
     setPlaying(false);
-    // A jump is a new keyframe for datamosh and a fresh start for tracking.
+    setAspect(a);
+    const ratio = ASPECTS.find((x) => x.id === a)!.ratio;
+    const c = centredCrop(v.el.videoWidth, v.el.videoHeight, ratio);
+    setCrop(c);
+    cropRef.current = c;
+    if (!ratio) {
+      setCropFrame(null);
+      sessionRef.current.reset();
+      await settleFrame();
+      return;
+    }
+    const full = await grabFrame(v, 1280, FULL_FRAME);
+    setCropFrame(bitmapCanvas(full));
+    full.close();
+  };
+  const cropDone = async () => {
+    setCropFrame(null);
     sessionRef.current.reset();
-    await seekTo(v, t);
     await settleFrame();
+  };
+  const chooseSize = (sz: SizeId) => {
+    setVSize(sz);
+    lsSet("videoSize", sz);
   };
 
   const togglePlayRef = useRef(togglePlay);
@@ -631,6 +808,7 @@ export default function Page() {
     committed.current = start;
     setRecipeState(start);
     setFavorites(lsGet<string[]>("favorites", []));
+    setVSize(lsGet<SizeId>("videoSize", "1080"));
     const opts = lsGet<ExportOptions | null>("export", null);
     if (opts) setExportOpts(opts);
     const stock = getStock(start.film);
@@ -735,6 +913,7 @@ export default function Page() {
     if (!v || exporting) return;
     setExporting(true);
     setPlaying(false);
+    if (cropFrame) await cropDone();
     const session = new VideoSession();
     try {
       const job = await exportVideo(
@@ -748,7 +927,8 @@ export default function Page() {
         () => {
           session.reset();
           setVideoJob((j) => (j ? { ...j, progress: 0, media: 0, started: performance.now() } : j));
-        }
+        },
+        { trim: trimRef.current, crop: cropRef.current, size: vSize }
       );
       setVideoJob({ progress: 0, media: 0, duration: job.duration, started: performance.now(), cancel: job.cancel });
       const out = await job.done;
@@ -1088,15 +1268,15 @@ export default function Page() {
       </header>
 
       <main className="stage">
+        <div className="viewer-col">
         <Viewer output={output} original={original} crisp={crisp} holdKey={holdKey} busy={busy}>
           {hideUI && <div className="viewer-hint">H · SHOW CONTROLS</div>}
-          {video && !hideUI && (
-            <VideoBar
-              playing={playing}
-              time={vTime}
-              duration={video.duration}
-              onToggle={togglePlay}
-              onScrub={(t) => void scrubTo(t)}
+          {video && cropFrame && (
+            <CropBox
+              frame={cropFrame}
+              ratio={ASPECTS.find((a) => a.id === aspect)!.ratio}
+              crop={crop}
+              onChange={setCrop}
             />
           )}
           {!hideUI && (
@@ -1135,6 +1315,29 @@ export default function Page() {
             </>
           )}
         </Viewer>
+        {video && !hideUI && (
+          <VideoDock
+            el={video.el}
+            duration={video.duration}
+            playing={playing}
+            onToggle={togglePlay}
+            onSeek={(t, done) => void seekPreview(t, done)}
+            trim={trim}
+            onTrim={changeTrim}
+            strip={strip}
+            aspect={aspect}
+            onAspect={(a) => void chooseAspect(a)}
+            cropping={!!cropFrame}
+            onCropDone={() => void cropDone()}
+            size={vSize}
+            onSize={chooseSize}
+            outSize={(() => {
+              const o = outputSize(video.el.videoWidth, video.el.videoHeight, crop, vSize);
+              return `${o.w} × ${o.h}`;
+            })()}
+          />
+        )}
+        </div>
 
         <aside className="panel">
           <div key={tab} className="tab-anim contents-panel">

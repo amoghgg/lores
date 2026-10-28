@@ -20,6 +20,55 @@ export function fitSize(w: number, h: number, long = VIDEO_MAX_LONG) {
   return { w: Math.max(2, Math.round((w * k) / 2) * 2), h: Math.max(2, Math.round((h * k) / 2) * 2) };
 }
 
+/** Part of the frame to keep, as fractions of the full picture (after rotation). */
+export type Crop = { x: number; y: number; w: number; h: number };
+export const FULL_FRAME: Crop = { x: 0, y: 0, w: 1, h: 1 };
+/** Part of the clip to keep, in seconds. */
+export type Trim = { start: number; end: number };
+
+/** Frame shapes offered for cropping; `ratio` = width / height, null = keep the original. */
+export const ASPECTS = [
+  { id: "original", label: "ORIGINAL", ratio: null },
+  { id: "9:16", label: "9:16", ratio: 9 / 16 },
+  { id: "4:5", label: "4:5", ratio: 4 / 5 },
+  { id: "1:1", label: "1:1", ratio: 1 },
+  { id: "16:9", label: "16:9", ratio: 16 / 9 },
+] as const;
+export type AspectId = (typeof ASPECTS)[number]["id"];
+
+/** Output sizes, by the short edge (720p = 720 px across a portrait clip). Never upscales. */
+export const SIZES = [
+  { id: "720", label: "720P", short: 720 },
+  { id: "1080", label: "1080P", short: 1080 },
+  { id: "max", label: "ORIGINAL", short: 2160 },
+] as const;
+export type SizeId = (typeof SIZES)[number]["id"];
+
+/** The largest centred crop of shape `ratio` in a `w`×`h` picture. */
+export function centredCrop(w: number, h: number, ratio: number | null): Crop {
+  if (!ratio) return { ...FULL_FRAME };
+  const fw = Math.min(1, (h * ratio) / w);
+  const fh = Math.min(1, w / ratio / h);
+  return { x: (1 - fw) / 2, y: (1 - fh) / 2, w: fw, h: fh };
+}
+
+/** Crop in source pixels (even, inside the picture). */
+export function cropPixels(srcW: number, srcH: number, c: Crop) {
+  const w = Math.max(2, Math.floor((c.w * srcW) / 2) * 2);
+  const h = Math.max(2, Math.floor((c.h * srcH) / 2) * 2);
+  const left = Math.min(srcW - w, Math.max(0, Math.round(c.x * srcW)));
+  const top = Math.min(srcH - h, Math.max(0, Math.round(c.y * srcH)));
+  return { left, top, width: w, height: h };
+}
+
+/** Size of the saved video for a crop of the source at a chosen size. */
+export function outputSize(srcW: number, srcH: number, c: Crop, size: SizeId) {
+  const px = cropPixels(srcW, srcH, c);
+  const short = SIZES.find((s) => s.id === size)!.short;
+  const k = Math.min(1, short / Math.min(px.width, px.height), 3840 / Math.max(px.width, px.height));
+  return { w: Math.max(2, Math.round((px.width * k) / 2) * 2), h: Math.max(2, Math.round((px.height * k) / 2) * 2) };
+}
+
 export type LoadedVideo = {
   el: HTMLVideoElement;
   url: string;
@@ -35,7 +84,7 @@ export async function loadVideo(blob: Blob, filename: string): Promise<LoadedVid
   const el = document.createElement("video");
   el.playsInline = true;
   el.preload = "auto";
-  el.loop = true;
+  el.loop = false; // the app loops the trimmed stretch itself
   // Browsers (iOS Safari especially) only decode a video that's in the page,
   // so it lives there, invisible; the picture is drawn by the pipeline.
   el.setAttribute("aria-hidden", "true");
@@ -68,13 +117,43 @@ export async function loadVideo(blob: Blob, filename: string): Promise<LoadedVid
 export const PREVIEW_LONG = 960;
 
 /**
- * The frame currently showing in the <video>. Full working size for stills
- * and export; `long` (e.g. PREVIEW_LONG) for live playback, which only has
- * to look right at the size it's shown.
+ * The frame currently showing in the <video>, cropped. Full working size for
+ * stills (long edge ≤ 1920); `long` (e.g. PREVIEW_LONG) for live playback,
+ * which only has to look right at the size it's shown.
  */
-export function grabFrame(v: LoadedVideo, long?: number): Promise<ImageBitmap> {
-  const { w, h } = long ? fitSize(v.width, v.height, long) : { w: v.width, h: v.height };
-  return createImageBitmap(v.el, { resizeWidth: w, resizeHeight: h, resizeQuality: long ? "medium" : "high" });
+export function grabFrame(v: LoadedVideo, long = VIDEO_MAX_LONG, crop: Crop = FULL_FRAME): Promise<ImageBitmap> {
+  const px = cropPixels(v.el.videoWidth, v.el.videoHeight, crop);
+  const { w, h } = fitSize(px.width, px.height, long);
+  return createImageBitmap(v.el, px.left, px.top, px.width, px.height, {
+    resizeWidth: w,
+    resizeHeight: h,
+    resizeQuality: long < VIDEO_MAX_LONG ? "medium" : "high",
+  });
+}
+
+/** `n` small frames spread across the clip, for the timeline strip. */
+export async function filmstrip(blob: Blob, n: number, height: number): Promise<HTMLCanvasElement[]> {
+  const mb = await import("mediabunny");
+  const input = new mb.Input({ source: new mb.BlobSource(blob), formats: mb.ALL_FORMATS });
+  const track = await input.getPrimaryVideoTrack();
+  if (!track || !(await track.canDecode())) return [];
+  const start = await track.getFirstTimestamp();
+  const dur = await track.computeDuration();
+  const width = Math.max(2, Math.round((height * track.displayWidth) / track.displayHeight));
+  const sink = new mb.CanvasSink(track, { width, height, fit: "cover", poolSize: 0 });
+  const times = Array.from({ length: n }, (_, i) => start + ((i + 0.5) / n) * (dur - start));
+  const out: HTMLCanvasElement[] = [];
+  for await (const c of sink.canvasesAtTimestamps(times)) {
+    if (c && c.canvas instanceof HTMLCanvasElement) out.push(c.canvas);
+    else if (c) {
+      const k = document.createElement("canvas");
+      k.width = c.canvas.width;
+      k.height = c.canvas.height;
+      k.getContext("2d")!.drawImage(c.canvas, 0, 0);
+      out.push(k);
+    }
+  }
+  return out;
 }
 
 /** Seek and wait until the frame is actually there. */
@@ -111,14 +190,22 @@ export async function exportVideo(
   /** `p` 0..1, `mediaTime` = seconds of video rendered so far. */
   onProgress: (p: number, mediaTime: number) => void,
   /** Called before a retry in another format: per-frame state must start over. */
-  onRestart: () => void = () => {}
+  onRestart: () => void = () => {},
+  opts: { trim?: Trim; crop?: Crop; size?: SizeId } = {}
 ): Promise<ExportJob> {
   const mb = await import("mediabunny");
   const probe = new mb.Input({ source: new mb.BlobSource(blob), formats: mb.ALL_FORMATS });
   const track = await probe.getPrimaryVideoTrack();
   if (!track) throw new Error("no video track");
-  const duration = await probe.computeDuration();
-  const { w, h } = fitSize(track.displayWidth, track.displayHeight);
+  const full = await probe.computeDuration();
+  const trim = opts.trim && (opts.trim.start > 0.01 || opts.trim.end < full - 0.01) ? opts.trim : undefined;
+  const duration = trim ? trim.end - trim.start : full;
+  const crop = opts.crop ?? FULL_FRAME;
+  const cropped = crop.w < 0.999 || crop.h < 0.999;
+  const cropPx = cropPixels(track.displayWidth, track.displayHeight, crop);
+  // Mediabunny crops and scales each frame before it reaches `render`, so a
+  // smaller output is cheaper to render, not just smaller to store.
+  const { w, h } = outputSize(track.displayWidth, track.displayHeight, crop, opts.size ?? "1080");
   const bitrate = videoBitrate(w, h);
   // MP4 first (plays everywhere), WebM if this machine can't encode MP4's
   // codecs. A codec can pass the capability check and still be refused when
@@ -137,10 +224,6 @@ export async function exportVideo(
       format: ext === "mp4" ? new mb.Mp4OutputFormat({ fastStart: "in-memory" }) : new mb.WebMOutputFormat(),
       target: new mb.BufferTarget(),
     });
-    const work = document.createElement("canvas");
-    work.width = w;
-    work.height = h;
-    const wctx = work.getContext("2d")!;
     // MP4 should carry AAC so it plays everywhere (QuickTime, iPhone,
     // Instagram); keep the original audio only if AAC can't be encoded here.
     const audioTrack = await input.getPrimaryAudioTrack();
@@ -155,11 +238,13 @@ export async function exportVideo(
       input,
       output,
       showWarnings: false,
+      trim,
       audio: aac ? { codec: "aac", quality: mb.QUALITY_HIGH } : undefined,
       video: {
         width: w,
         height: h,
-        fit: "contain",
+        fit: "fill",
+        crop: cropped ? cropPx : undefined,
         codec: codec as "avc",
         // A fixed bitrate scaled to the frame: ~8 Mbps at 1080p30, so
         // dithered or grainy looks can't balloon the file (quantizer mode
@@ -170,9 +255,10 @@ export async function exportVideo(
         hardwareAcceleration: "no-preference",
         forceTranscode: true,
         process: async (sample) => {
-          sample.draw(wctx, 0, 0, w, h);
-          const frame = await createImageBitmap(work);
+          // Already cropped and scaled to w×h by Mediabunny.
+          const frame = await createImageBitmap(sample.toCanvasImageSource());
           try {
+            // Timestamps already count from the start of the trimmed clip.
             return await render(frame, { time: sample.timestamp });
           } finally {
             frame.close();
