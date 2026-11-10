@@ -1,5 +1,6 @@
 import { getPalette } from "../palettes";
 import { effectiveBlockSize, type Settings } from "../pipeline";
+import { ensureLuts, lutSync } from "../lut";
 import {
   packFilmUniform,
   FILM_UNIFORM_BYTES,
@@ -476,11 +477,13 @@ struct Film {
   plateB: vec4f,
   plateBColor: vec4f,
   fx3: vec4f,         // scanlines, chroma bleed px, smear, sharpen
+  lut: vec4f,         // on, table size
 };
 
 @group(0) @binding(0) var samp: sampler;
 @group(0) @binding(1) var src: texture_2d<f32>;
 @group(0) @binding(2) var<uniform> F: Film;
+@group(0) @binding(3) var lutTex: texture_3d<f32>;
 
 const LUMA = vec3f(0.2126, 0.7152, 0.0722);
 const GOLDEN = 2.39996323;
@@ -607,7 +610,13 @@ fn ramp5(l: f32) -> vec3f {
   return mix(F.tone3.xyz, F.tone4.xyz, t);
 }
 
-fn grade(cin: vec3f, glow: vec3f, expGain: f32, p: vec2f) -> vec4f {
+fn grade(cin0: vec3f, glow: vec3f, expGain: f32, p: vec2f) -> vec4f {
+  // A measured camera's colour table goes first; the recipe works on top.
+  var cin = cin0;
+  if (F.lut.x > 0.5) {
+    let n = F.lut.y;
+    cin = textureSampleLevel(lutTex, samp, clamp(cin0, vec3f(0.0), vec3f(1.0)) * ((n - 1.0) / n) + 0.5 / n, 0.0).rgb;
+  }
   var c = vec3f(dot(F.mixR.xyz, cin), dot(F.mixG.xyz, cin), dot(F.mixB.xyz, cin));
   c = clamp(c * F.wb.xyz * exp2(F.wb.w) * expGain + glow, vec3f(0.0), vec3f(1.0));
 
@@ -1265,6 +1274,30 @@ export class WebGPUPipeline {
   /** One uniform buffer per stacked film layer — writes before a single
    *  submit would otherwise all land on the same buffer. */
   private bufFilms: GPUBuffer[] = [];
+  /** Colour tables as 3D textures, by id; "" is a 1×1×1 stand-in. */
+  private luts = new Map<string, GPUTexture>();
+
+  private lutTexture(id: string): GPUTexture {
+    const lut = lutSync(id);
+    const key = lut ? id : "";
+    const hit = this.luts.get(key);
+    if (hit) return hit;
+    const n = lut?.size ?? 1;
+    const tex = this.device.createTexture({
+      size: [n, n, n],
+      dimension: "3d",
+      format: "rgba8unorm",
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+    });
+    this.device.queue.writeTexture(
+      { texture: tex },
+      lut ? lut.data : new Uint8Array([255, 255, 255, 255]),
+      { bytesPerRow: n * 4, rowsPerImage: n },
+      [n, n, n]
+    );
+    this.luts.set(key, tex);
+    return tex;
+  }
   private bufVizFx: GPUBuffer;
   private bufFFT: GPUBuffer;
   private configuredCanvases = new WeakMap<HTMLCanvasElement, GPUCanvasContext>();
@@ -1852,6 +1885,9 @@ export class WebGPUPipeline {
     }
   ): Promise<GPUProcessResult> {
     const t0 = performance.now();
+    // Measured looks need their colour table before the pass is encoded.
+    const filmOpt = options?.film;
+    if (filmOpt) await ensureLuts((Array.isArray(filmOpt) ? filmOpt : [filmOpt]).map((f) => f.recipe));
 
     const w =
       "naturalWidth" in source ? source.naturalWidth : source.width;
@@ -2164,6 +2200,7 @@ export class WebGPUPipeline {
         });
       }
       const buf = this.bufFilms[i];
+      const lutView = this.lutTexture(film.recipe.lut).createView({ dimension: "3d" });
       this.device.queue.writeBuffer(
         buf,
         0,
@@ -2175,6 +2212,7 @@ export class WebGPUPipeline {
           { binding: 0, resource: this.samplerClamp },
           { binding: 1, resource: currentTex.createView() },
           { binding: 2, resource: { buffer: buf } },
+          { binding: 3, resource: lutView },
         ],
       });
       // The dither stipple path can leave nextTex === a live input; pick a

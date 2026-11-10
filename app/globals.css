@@ -869,6 +869,13 @@ input[type="range"],
 .chip-open {
   border-color: rgb(var(--ink-700));
 }
+/* Makers inside CAMERAS sit one step further in than the families. */
+.chips-brands {
+  margin-top: -2px;
+  margin-left: 12px;
+  padding-left: 10px;
+  border-left: 2px solid rgb(var(--ink-400));
+}
 
 /* Film thumbs: ＋ stacks the look as another layer; badge = its place in the stack. */
 .thumb-plus {

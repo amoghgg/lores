@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { Thumb } from "./Thumb";
 import { Range } from "./Range";
 import { PALETTES } from "@/lib/palettes";
-import { FILM_CATEGORIES, FILM_STOCKS, HERO_LOOKS, getStock } from "@/lib/filmStocks";
+import { CAMERA_BRANDS, FILM_CATEGORIES, FILM_STOCKS, HERO_LOOKS, getStock } from "@/lib/filmStocks";
 import { EVENT as MODELS_EVENT, MODEL_SIZE, missingFor, readyCount } from "@/lib/models";
 import { PHOTO_ONLY } from "@/lib/session";
 import {
@@ -92,6 +92,7 @@ type LooksProps = {
 export function Looks(p: LooksProps) {
   const { recipe: r, set } = p;
   const [moreOpen, setMoreOpen] = useState(false);
+  const [brand, setBrand] = useState<string | null>(null);
   // Thumbnails re-render once a model finishes loading.
   const [models, setModels] = useState(readyCount());
   useEffect(() => {
@@ -121,12 +122,15 @@ export function Looks(p: LooksProps) {
     const faves = FILM_STOCKS.filter((s) => p.favorites.includes(s.id));
     const cat = p.filmCat === "faves" && !faves.length ? "best" : p.filmCat;
     const best = cat === "best";
+    // CAMERAS splits by maker: the one picked, else the maker of the look in use.
+    const inUse = getStock(filmLayers(r)[p.films.layer]?.film ?? "");
+    const brandId = brand ?? (inUse?.category === "camera" ? inUse.brand ?? "classic" : CAMERA_BRANDS[0].id);
     const list =
       cat === "faves"
         ? faves
         : best
         ? HERO_LOOKS.map((id) => getStock(id)!).filter(Boolean)
-        : FILM_STOCKS.filter((s) => s.category === cat);
+        : FILM_STOCKS.filter((s) => s.category === cat && (cat !== "camera" || (s.brand ?? "classic") === brandId));
     // The families stay folded away until asked for (or one is in use).
     const showFamilies = moreOpen || (!best && cat !== "faves");
     const stack = filmLayers(r);
@@ -179,6 +183,15 @@ export function Looks(p: LooksProps) {
             {FILM_CATEGORIES.map((c) => (
               <button key={c.id} className={`chip ${cat === c.id ? "chip-on" : ""}`} onClick={() => p.onFilmCat(c.id)}>
                 {c.label}
+              </button>
+            ))}
+          </div>
+        )}
+        {cat === "camera" && (
+          <div className="chips chips-brands" role="group" aria-label="Camera maker">
+            {CAMERA_BRANDS.map((b) => (
+              <button key={b.id} className={`chip ${brandId === b.id ? "chip-on" : ""}`} onClick={() => setBrand(b.id)} title={b.blurb}>
+                {b.label}
               </button>
             ))}
           </div>

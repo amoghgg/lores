@@ -3,6 +3,8 @@
 // (FRAG_FILM in gpu/webgpu.ts) and on the CPU (applyFilmCPU below) — keep the
 // two in step when touching either.
 
+import { lutSync, sampleLut, type Lut } from "./lut";
+
 export type Vec3 = [number, number, number];
 /** 12 hue bands, 30° apart, starting at red (0°). */
 export type Bands = number[];
@@ -147,6 +149,8 @@ export type FilmRecipe = {
   fxPaper: string;
   fxScale: number;
   fxLabels: boolean;
+  /** Measured colour table (lib/lut.ts), applied first — "" for none. */
+  lut: string;
 };
 
 export const NEUTRAL: FilmRecipe = {
@@ -216,6 +220,7 @@ export const NEUTRAL: FilmRecipe = {
   fxPaper: "#ffffff",
   fxScale: 512,
   fxLabels: true,
+  lut: "",
 };
 
 /** User-facing multipliers layered on top of a stock's recipe. */
@@ -291,7 +296,7 @@ export function resolveRecipe(r: FilmRecipe, seed: number): FilmRecipe {
 }
 
 /** Uniform layout: 33 vec4f — mirrors `struct Film` in FRAG_FILM. */
-export const FILM_UNIFORM_BYTES = 41 * 16;
+export const FILM_UNIFORM_BYTES = 42 * 16;
 
 export const QUANT_BITS: Record<QuantMode, number> = {
   none: 0,
@@ -374,6 +379,7 @@ export function packFilmUniform(
     col(pl ? pl.color : "#000000", 0);
   }
   v4(r.scanlines, r.bleed, r.smear, r.sharpen);
+  v4(lutSync(r.lut) ? 1 : 0, lutSync(r.lut)?.size ?? 0, 0, 0);
   return buf;
 }
 
@@ -441,6 +447,7 @@ export type GradeCtx = {
   highTint: Vec3;
   tone: Vec3[];
   expMul: number;
+  lut: Lut | null;
 };
 
 export function gradeCtx(r: FilmRecipe): GradeCtx {
@@ -450,6 +457,7 @@ export function gradeCtx(r: FilmRecipe): GradeCtx {
     highTint: hex3(r.highTint),
     tone: toneStops(r.tone),
     expMul: Math.pow(2, r.exposure),
+    lut: lutSync(r.lut),
   };
 }
 
@@ -471,6 +479,7 @@ export function gradePixel(
   longEdge = 2048
 ): Vec3 {
   const r = g.r;
+  if (g.lut) [ri, gi, bi] = sampleLut(g.lut, ri, gi, bi);
   let x = r.mix[0][0] * ri + r.mix[0][1] * gi + r.mix[0][2] * bi;
   let y = r.mix[1][0] * ri + r.mix[1][1] * gi + r.mix[1][2] * bi;
   let z = r.mix[2][0] * ri + r.mix[2][1] * gi + r.mix[2][2] * bi;

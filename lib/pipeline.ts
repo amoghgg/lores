@@ -271,6 +271,8 @@ export async function processBest(
   // order); every grade, grain, pixel stage and texture then runs on top.
   const temps: ImageBitmap[] = [];
   let films = asFilms(film);
+  // Measured looks' colour tables (tiny, cached) — both engines read them.
+  if (films.some((f) => f.recipe.lut)) await (await import("./lut")).ensureLuts(films.map((f) => f.recipe));
   if (frame) {
     // Video: photo-only restyles are skipped; everything moves with time.
     films = films.filter((f) => !PHOTO_ONLY.has(f.recipe.stylize)).map((f) => ({ ...f, time: frame.time }));

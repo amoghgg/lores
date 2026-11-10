@@ -1,7 +1,7 @@
 // Every look in the catalogue renders: tap it on the sample photo, the image
 // changes, nothing throws. One test per family so they run in parallel.
 import { test, expect } from "@playwright/test";
-import { FILM_CATEGORIES, FILM_STOCKS } from "../lib/filmStocks";
+import { CAMERA_BRANDS, FILM_CATEGORIES, FILM_STOCKS } from "../lib/filmStocks";
 import { enterFresh, fingerprint, look, meanDiff, openFamily, trackErrors, waitForChange } from "./helpers";
 
 // Overlays that leave most pixels alone (thin boxes, a soft haze) move the
@@ -20,6 +20,11 @@ for (const fam of FILM_CATEGORIES) {
     const base = await fingerprint(page);
     let prev = base;
     for (const s of FILM_STOCKS.filter((x) => x.category === fam.id)) {
+      // CAMERAS shows one maker at a time.
+      if (fam.id === "camera") {
+        const maker = CAMERA_BRANDS.find((b) => b.id === (s.brand ?? "classic"))!.label;
+        await page.locator(".chips-brands .chip", { hasText: maker }).click();
+      }
       await look(page, s.name).click();
       await page.mouse.move(2, 2);
       await expect(page.locator(".now-title")).toContainText(s.name);

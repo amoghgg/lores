@@ -71,10 +71,27 @@ export const FILM_CATEGORIES: FilmCategory[] = [
   },
 ];
 
+/** Camera makers inside CAMERAS, in chip order. Looks without a brand are "classic". */
+export const CAMERA_BRANDS: FilmCategory[] = [
+  {
+    id: "fujifilm",
+    label: "FUJIFILM",
+    blurb:
+      "The film simulations built into Fujifilm X and GFX cameras, from measured colour tables, plus Fuji's instant film.",
+  },
+  {
+    id: "classic",
+    label: "TOY & INSTANT",
+    blurb: "Polaroids, plastic lenses, disposables and home movies.",
+  },
+];
+
 export type FilmStock = {
   id: string;
   name: string;
   category: string;
+  /** Maker, for looks in CAMERAS (see CAMERA_BRANDS). */
+  brand?: string;
   /** Short readout line: ISO · process · era. */
   meta: string;
   /** One-line card hint. */
@@ -106,6 +123,7 @@ type Spec = Partial<FilmRecipe> & {
   id: string;
   name: string;
   category: string;
+  brand?: string;
   meta: string;
   hint: string;
   note: string;
@@ -161,6 +179,7 @@ function stock(spec: Spec): FilmStock {
     id,
     name,
     category,
+    brand,
     meta,
     hint,
     note,
@@ -222,7 +241,7 @@ function stock(spec: Spec): FilmStock {
     r.gain = gain as Vec3;
     r.gamma = gamma as Vec3;
   }
-  return { id, name, category, meta, hint, note, recipe: r };
+  return { id, name, category, ...(brand ? { brand } : {}), meta, hint, note, recipe: r };
 }
 
 const PAN_TRIX: Vec3 = [0.28, 0.5, 0.22];
@@ -949,23 +968,6 @@ export const FILM_STOCKS: FilmStock[] = [
     paper: "#f4f2ec",
   }),
   stock({
-    id: "instax",
-    name: "INSTAX MINI",
-    category: "camera",
-    meta: "INSTANT · 54×86 · 1998",
-    hint: "cool, crisp, credit-card",
-    note: "Fuji's instant: cooler and crisper than Polaroid, green-black shadows, the narrow credit-card frame clipped to a corkboard.",
-    ramp: ["#1b2422", "#777874", "#f5f6f2"],
-    con: 0.15,
-    sat: 1.05,
-    bands: { G: { h: 8 }, B: { s: 5 } },
-    grainSigma: 0.01,
-    grainSize: 16,
-    grainChroma: 0.25,
-    border: "instax",
-    paper: "#f7f7f4",
-  }),
-  stock({
     id: "expiredpolaroid",
     name: "EXPIRED POLAROID",
     category: "camera",
@@ -1123,6 +1125,110 @@ export const FILM_STOCKS: FilmStock[] = [
     paper: "#f4eedf",
   }),
 
+  // ── CAMERAS · FUJIFILM ──────────────────────────────────────────────────
+  // Colour from measured tables (public/luts/fuji, see LICENSE.md there):
+  // each is the change from PROVIA/STANDARD — roughly how a phone already
+  // renders — to the simulation, so it works on a finished photo.
+  ...(
+    [
+      ["fujiclassicchrome", "CLASSIC CHROME", "classicchrome", "X30 · 2014", "muted, documentary",
+        "Fuji's take on the look of 20th-century magazine reportage: colour held back, deep firm shadows, soft highlights, skies pulled towards cyan. The street photographer's default."],
+      ["fujiclassicneg", "CLASSIC NEG.", "classicneg", "X-PRO3 · 2019", "hard, moody snapshot",
+        "Modelled on Superia, the everyday colour negative: hard contrast, low saturation, and colours that shift with brightness — cool in the shadows, warm in the light."],
+      ["fujinostalgicneg", "NOSTALGIC NEG.", "nostalgicneg", "GFX100S · 2021", "amber 70s American colour",
+        "After the 1970s 'American New Color' photographers: amber in the highlights, soft gentle shadows, richer colour than Classic Neg."],
+      ["fujivelvia", "VELVIA / VIVID", "velvia", "X100 · 2011", "saturated landscapes",
+        "The slide film for landscapes, in digital: high saturation and contrast, deep blues and greens. Too strong for skin — use it on nature."],
+      ["fujiastia", "ASTIA / SOFT", "astia", "X100 · 2011", "soft skin, bright sky",
+        "Gentle contrast for portraits, while blues and greens keep their colour — soft skin under a still-vivid sky."],
+      ["fujiproneghi", "PRO NEG. HI", "proneghi", "X-PRO1 · 2012", "natural portrait, punchy",
+        "The studio portrait film: natural skin with a little more contrast and snap than Pro Neg. Std — good with hard light."],
+      ["fujipronegstd", "PRO NEG. STD", "pronegstd", "X-PRO1 · 2012", "soft, flat, true skin",
+        "The softest colour simulation: low contrast and saturation, smooth gradation from skin into shadow. Wedding and studio photographers' favourite."],
+      ["fujieterna", "ETERNA / CINEMA", "eterna", "X-H1 · 2018", "flat, muted cinema",
+        "Fuji's motion-picture stock as a camera look: very low saturation, a long gentle curve and lots of shadow detail — like footage before the grade."],
+      ["fujibleach", "ETERNA BLEACH BYPASS", "bleachbypass", "X-T4 · 2020", "silvery, hard, desaturated",
+        "The lab trick of skipping the bleach so silver stays in the film: high contrast, almost no colour, a metallic sheen."],
+      ["fujirealaace", "REALA ACE", "realaace", "GFX100 II · 2023", "true colour, crisp",
+        "Named after Fuji's most faithful negative film: true-to-life colour with crisp, slightly firmer tones. The honest one."],
+    ] as const
+  ).map(([id, name, lut, era, hint, note]) =>
+    stock({ id, name, category: "camera", brand: "fujifilm", meta: `FUJIFILM ${era}`, hint, note, lut: `fuji/${lut}` })
+  ),
+  stock({
+    id: "fujiacros",
+    name: "ACROS",
+    category: "camera",
+    brand: "fujifilm",
+    meta: "FUJIFILM X-PRO2 · 2016",
+    hint: "rich black and white",
+    note: "Fuji's fine-grain black-and-white film as a simulation: smooth tones, deep blacks, crisp detail, and a fine film-like grain.",
+    mono: PAN,
+    ramp: ["#080808", "#767676", "#f6f6f6"],
+    con: 0.2,
+    grainSigma: 0.012,
+    grainSize: 1.2,
+    grainChroma: 0,
+  }),
+  stock({
+    id: "fujiacrosr",
+    name: "ACROS + R",
+    category: "camera",
+    brand: "fujifilm",
+    meta: "FUJIFILM · RED FILTER",
+    hint: "dark skies, glowing skin",
+    note: "ACROS shot through a red filter: blue skies go almost black, clouds pop, skin and brick turn light.",
+    mono: [0.62, 0.33, 0.05],
+    ramp: ["#080808", "#767676", "#f6f6f6"],
+    con: 0.25,
+    grainSigma: 0.012,
+    grainSize: 1.2,
+    grainChroma: 0,
+  }),
+  stock({
+    id: "fujimono",
+    name: "MONOCHROME",
+    category: "camera",
+    brand: "fujifilm",
+    meta: "FUJIFILM X100 · 2011",
+    hint: "plain black and white",
+    note: "The standard black-and-white: softer and more even than ACROS, with no grain.",
+    mono: PAN,
+    ramp: ["#0e0e0e", "#787878", "#f4f4f4"],
+    con: 0.05,
+  }),
+  stock({
+    id: "fujisepia",
+    name: "SEPIA",
+    category: "camera",
+    brand: "fujifilm",
+    meta: "FUJIFILM X100 · 2011",
+    hint: "warm brown monochrome",
+    note: "Black and white toned a warm brown, like an old print.",
+    mono: PAN,
+    tone: ["#22170e", "#86704f", "#f3e7d1"],
+    toneMix: 1,
+    con: 0.05,
+  }),
+
+  stock({
+    id: "instax",
+    name: "INSTAX MINI",
+    category: "camera",
+    brand: "fujifilm",
+    meta: "INSTANT · 54×86 · 1998",
+    hint: "cool, crisp, credit-card",
+    note: "Fuji's instant: cooler and crisper than Polaroid, green-black shadows, the narrow credit-card frame clipped to a corkboard.",
+    ramp: ["#1b2422", "#777874", "#f5f6f2"],
+    con: 0.15,
+    sat: 1.05,
+    bands: { G: { h: 8 }, B: { s: 5 } },
+    grainSigma: 0.01,
+    grainSize: 16,
+    grainChroma: 0.25,
+    border: "instax",
+    paper: "#f7f7f4",
+  }),
   // ── ANTIQUE ─────────────────────────────────────────────────────────────
   stock({
     id: "trix",
@@ -2247,6 +2353,8 @@ export const HERO_LOOKS = [
   "gold200",
   "kodachrome64",
   "cinestill800t",
+  "fujiclassicchrome",
+  "fujiclassicneg",
   "vision2383",
   "trix",
   "sx70",
